@@ -127,16 +127,19 @@ fn enter_api_key() -> Result<String, io::Error> {
 
 fn choose_default_model() -> String {
     println!("\nStep 3/6: Choose your default model");
-    println!("  1) MiniMax-M2.5            - Latest general purpose (2M context, tool calling)");
-    println!("  2) MiniMax-M2.5-lightning - Fast version of M2.5");
-    println!("  3) MiniMax-M2.1           - Polyglot programming mastery");
-    println!("  4) MiniMax-M2             - Efficient agentic model");
-    println!("  5) MiniMax-Text-01        - Long context model");
-    println!("  6) MiniMax-Coding-01      - Code generation model");
+    println!("  1) MiniMax-M3              - Frontier coding & agentic (1M context)");
+    println!("  2) MiniMax-M2.7            - Recursive self-improvement model");
+    println!("  3) MiniMax-M2.7-highspeed  - Same as M2.7, faster inference");
+    println!("  4) MiniMax-M2.5            - General purpose (2M context, tool calling)");
+    println!("  5) MiniMax-M2.5-lightning  - Fast version of M2.5");
+    println!("  6) MiniMax-M2.1            - Polyglot programming mastery");
+    println!("  7) MiniMax-M2              - Efficient agentic model");
+    println!("  8) MiniMax-Text-01         - Long context model");
+    println!("  9) MiniMax-Coding-01       - Code generation model");
     println!();
 
     loop {
-        print!("Enter choice (1-6) [1]: ");
+        print!("Enter choice (1-9) [4]: ");
         let _ = io::stdout().flush();
 
         let mut input = String::new();
@@ -146,20 +149,26 @@ fn choose_default_model() -> String {
         }
 
         let input = input.trim();
-        if input.is_empty() || input == "1" {
-            return "MiniMax-M2.5".to_string();
+        if input == "1" {
+            return "MiniMax-M3".to_string();
         } else if input == "2" {
-            return "MiniMax-M2.5-lightning".to_string();
+            return "MiniMax-M2.7".to_string();
         } else if input == "3" {
-            return "MiniMax-M2.1".to_string();
-        } else if input == "4" {
-            return "MiniMax-M2".to_string();
+            return "MiniMax-M2.7-highspeed".to_string();
+        } else if input.is_empty() || input == "4" {
+            return "MiniMax-M2.5".to_string();
         } else if input == "5" {
-            return "MiniMax-Text-01".to_string();
+            return "MiniMax-M2.5-lightning".to_string();
         } else if input == "6" {
+            return "MiniMax-M2.1".to_string();
+        } else if input == "7" {
+            return "MiniMax-M2".to_string();
+        } else if input == "8" {
+            return "MiniMax-Text-01".to_string();
+        } else if input == "9" {
             return "MiniMax-Coding-01".to_string();
         } else {
-            println!("Invalid choice. Please enter 1, 2, 3, 4, 5, or 6.");
+            println!("Invalid choice. Please enter 1-9.");
         }
     }
 }

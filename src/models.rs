@@ -119,6 +119,14 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
+    // MiniMax M3 (1M context)
+    if lower.contains("minimax-m3") || lower.ends_with("-m3") || lower == "m3" {
+        return Some(1_000_000);
+    }
+    // MiniMax M2.7 series (204.8K context)
+    if lower.contains("minimax-m2.7") || lower.contains("minimax-2.7") || lower.contains("m2.7") {
+        return Some(204_800);
+    }
     // MiniMax M2.5 series (2M context)
     if lower.contains("minimax-m2.5") || lower.contains("minimax-2.5") || lower.contains("m2.5") {
         return Some(2_000_000);
@@ -128,7 +136,11 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         return Some(1_000_000);
     }
     // MiniMax M2 (efficient agentic model - assume similar to M2.1)
-    if lower.contains("minimax-m2") && !lower.contains("2.1") && !lower.contains("2.5") {
+    if lower.contains("minimax-m2")
+        && !lower.contains("2.1")
+        && !lower.contains("2.5")
+        && !lower.contains("2.7")
+    {
         return Some(1_000_000);
     }
     // MiniMax Text-01 (256K context)
@@ -238,5 +250,17 @@ mod tests {
         assert_eq!(context_window_for_model("MiniMax-M2.1"), Some(1_000_000));
         assert_eq!(context_window_for_model("MiniMax-M2"), Some(1_000_000));
         assert_eq!(context_window_for_model("m2.1"), Some(1_000_000));
+    }
+
+    #[test]
+    fn maps_minimax_m2_7_and_m3() {
+        assert_eq!(context_window_for_model("MiniMax-M2.7"), Some(204_800));
+        assert_eq!(
+            context_window_for_model("MiniMax-M2.7-highspeed"),
+            Some(204_800)
+        );
+        assert_eq!(context_window_for_model("m2.7"), Some(204_800));
+        assert_eq!(context_window_for_model("MiniMax-M3"), Some(1_000_000));
+        assert_eq!(context_window_for_model("m3"), Some(1_000_000));
     }
 }
