@@ -69,6 +69,18 @@ impl ActiveProvider {
     pub fn openai_chat_completions_url(&self) -> String {
         openai_chat_completions_url(&self.url)
     }
+
+    /// Models list endpoint for OpenAI-compatible APIs.
+    #[must_use]
+    pub fn openai_models_url(&self) -> String {
+        openai_models_url(&self.url)
+    }
+
+    /// Models list endpoint for Anthropic-compatible APIs.
+    #[must_use]
+    pub fn anthropic_models_url(&self) -> String {
+        anthropic_models_url(&self.url)
+    }
 }
 
 // === Types ===
@@ -913,7 +925,7 @@ fn normalize_base_url(base: &str) -> String {
     trimmed.to_string()
 }
 
-fn is_minimax_host(url: &str) -> bool {
+pub(crate) fn is_minimax_host(url: &str) -> bool {
     let lower = url.to_lowercase();
     lower.contains("api.minimax.io") || lower.contains("api.minimaxi.com")
 }
@@ -954,6 +966,47 @@ pub fn openai_chat_completions_url(url: &str) -> String {
         return format!("{trimmed}/chat/completions");
     }
     format!("{trimmed}/v1/chat/completions")
+}
+
+/// Build the models list URL for OpenAI-compatible APIs from a provider base URL.
+#[must_use]
+pub fn openai_models_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let lower = trimmed.to_lowercase();
+    let base = if lower.ends_with("/chat/completions") {
+        trimmed.trim_end_matches("/chat/completions").to_string()
+    } else {
+        trimmed.to_string()
+    };
+    if base.to_lowercase().ends_with("/v1") {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
+/// Build the models list URL for Anthropic-compatible APIs from a provider base URL.
+#[must_use]
+pub fn anthropic_models_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let lower = trimmed.to_lowercase();
+    if lower.ends_with("/v1/models") {
+        return trimmed.to_string();
+    }
+    if lower.contains("/anthropic") {
+        if lower.ends_with("/v1") {
+            return format!("{trimmed}/models");
+        }
+        return format!("{trimmed}/v1/models");
+    }
+    if is_minimax_host(trimmed) {
+        let root = normalize_base_url(trimmed);
+        return format!("{}/anthropic/v1/models", root.trim_end_matches('/'));
+    }
+    if lower.ends_with("/v1") {
+        return format!("{trimmed}/models");
+    }
+    format!("{trimmed}/v1/models")
 }
 
 fn resolve_provider_entry(
@@ -1520,6 +1573,79 @@ mod tests {
         assert_eq!(
             openai_chat_completions_url("https://proxy.example.com"),
             "https://proxy.example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_models_url_helpers() {
+        // OpenAI-compatible base URLs
+        assert_eq!(
+            openai_models_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://proxy.example.com"),
+            "https://proxy.example.com/v1/models"
+        );
+        // Full chat-completions URL collapses back to the models endpoint
+        assert_eq!(
+            openai_models_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/models"
+        );
+
+        // Anthropic-compatible base URLs
+        assert_eq!(
+            anthropic_models_url("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.anthropic.com/v1"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.minimax.io"),
+            "https://api.minimax.io/anthropic/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.minimax.io/anthropic/v1"),
+            "https://api.minimax.io/anthropic/v1/models"
+        );
+    }
+
+    #[test]
+    fn test_coding_plan_provider_urls() {
+        // Kimi Coding Plan — separate api.kimi.com service
+        assert_eq!(
+            anthropic_messages_url("https://api.kimi.com/coding/v1"),
+            "https://api.kimi.com/coding/v1/messages"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.kimi.com/coding/v1"),
+            "https://api.kimi.com/coding/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.moonshot.ai/anthropic"),
+            "https://api.moonshot.ai/anthropic/v1/models"
+        );
+
+        // Z.ai Coding Plan — Anthropic-compatible
+        assert_eq!(
+            anthropic_messages_url("https://api.z.ai/api/anthropic"),
+            "https://api.z.ai/api/anthropic/v1/messages"
+        );
+        assert_eq!(
+            anthropic_models_url("https://api.z.ai/api/anthropic"),
+            "https://api.z.ai/api/anthropic/v1/models"
+        );
+
+        // DeepSeek — OpenAI-compatible
+        assert_eq!(
+            openai_chat_completions_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_models_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/models"
         );
     }
 }

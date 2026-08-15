@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Model picker now auto-discovers models from the active provider's models API (`/v1/models`, OpenAI- and Anthropic-compatible) and falls back to the built-in MiniMax catalog when discovery fails
+
 ## [0.6.0] - 2026-01-29
 
 ### Added

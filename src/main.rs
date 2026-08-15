@@ -23,6 +23,7 @@ mod llm_client;
 mod logging;
 mod mcp;
 mod mcp_server;
+mod model_discovery;
 mod models;
 mod modules;
 mod openai_client;

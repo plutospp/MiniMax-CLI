@@ -68,6 +68,8 @@ default_model = "gpt-4.1"
 - `anthropic`: POST `{url}/v1/messages`. MiniMax hosts without `/anthropic` use `{url}/anthropic/v1/messages`.
 - `openai`: POST `{url}/chat/completions` when `url` ends with `/v1`, otherwise `{url}/v1/chat/completions`.
 
+**Model discovery:** the `/model` picker queries the active provider's models list endpoint (`GET {url}/v1/models` for both API flavors) and offers whatever that provider serves, so newly released models appear without CLI updates. If the endpoint is missing, unreachable, or returns nothing, the picker falls back to the built-in MiniMax catalog and shows why in the transcript.
+
 Select the active provider with:
 
 - Config: `provider = "openai"`

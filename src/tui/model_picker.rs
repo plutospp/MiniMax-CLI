@@ -1,6 +1,8 @@
-//! Interactive model picker for switching between MiniMax models.
+//! Interactive model picker for switching between chat models.
 //!
-//! Provides a simple list-based picker for available models with descriptions.
+//! The picker renders whatever model list it is constructed with: models
+//! auto-discovered from the active provider's API (see
+//! [`crate::model_discovery`]) or the built-in MiniMax catalog as a fallback.
 
 use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
@@ -11,7 +13,7 @@ use ratatui::{
     prelude::Widget,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 /// Information about a MiniMax model
@@ -81,6 +83,48 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
     },
 ];
 
+/// One selectable row in the model picker.
+///
+/// `description` and `capabilities` are optional presentation lines; entries
+/// discovered from a provider API omit them to keep long lists compact.
+#[derive(Debug, Clone)]
+pub struct PickerModel {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub capabilities: String,
+}
+
+impl PickerModel {
+    /// Build a compact entry for a model discovered from a provider API.
+    #[must_use]
+    pub fn discovered(id: String, display_name: Option<String>) -> Self {
+        let name = display_name
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| id.clone());
+        Self {
+            id,
+            name,
+            description: String::new(),
+            capabilities: String::new(),
+        }
+    }
+}
+
+/// Fallback picker entries built from the built-in MiniMax catalog.
+#[must_use]
+pub fn builtin_models() -> Vec<PickerModel> {
+    AVAILABLE_MODELS
+        .iter()
+        .map(|m| PickerModel {
+            id: m.id.to_string(),
+            name: m.name.to_string(),
+            description: m.description.to_string(),
+            capabilities: m.capabilities.to_string(),
+        })
+        .collect()
+}
+
 /// Result of a model selection
 #[derive(Debug, Clone)]
 pub enum ModelPickerResult {
@@ -96,13 +140,16 @@ pub struct ModelPicker {
     selected: usize,
     /// ID of the currently active model (to highlight)
     current_model: String,
+    /// Models offered for selection (discovered or built-in fallback)
+    models: Vec<PickerModel>,
+    /// Where the model list came from, shown in the footer
+    source: String,
 }
 
 impl ModelPicker {
-    /// Create a new model picker
-    pub fn new(current_model: String) -> Self {
-        // Find the index of the current model, or default to 0
-        let selected = AVAILABLE_MODELS
+    /// Create a new model picker over the given model list.
+    pub fn new(current_model: String, models: Vec<PickerModel>, source: String) -> Self {
+        let selected = models
             .iter()
             .position(|m| m.id == current_model)
             .unwrap_or(0);
@@ -110,14 +157,14 @@ impl ModelPicker {
         Self {
             selected,
             current_model,
+            models,
+            source,
         }
     }
 
     /// Get the currently selected model ID
     pub fn selected_model_id(&self) -> Option<String> {
-        AVAILABLE_MODELS
-            .get(self.selected)
-            .map(|m| m.id.to_string())
+        self.models.get(self.selected).map(|m| m.id.clone())
     }
 
     /// Check if a model is the currently active one
@@ -127,16 +174,20 @@ impl ModelPicker {
 
     /// Move selection up
     fn select_up(&mut self) {
-        if self.selected > 0 {
+        if self.models.is_empty() {
+            self.selected = 0;
+        } else if self.selected > 0 {
             self.selected -= 1;
         } else {
-            self.selected = AVAILABLE_MODELS.len().saturating_sub(1);
+            self.selected = self.models.len() - 1;
         }
     }
 
     /// Move selection down
     fn select_down(&mut self) {
-        if self.selected < AVAILABLE_MODELS.len() - 1 {
+        if self.models.is_empty() {
+            self.selected = 0;
+        } else if self.selected < self.models.len() - 1 {
             self.selected += 1;
         } else {
             self.selected = 0;
@@ -144,9 +195,9 @@ impl ModelPicker {
     }
 
     /// Render a model item
-    fn render_model_item(&self, model: &ModelInfo, index: usize) -> ListItem<'_> {
+    fn render_model_item(&self, model: &PickerModel, index: usize) -> ListItem<'_> {
         let is_selected = index == self.selected;
-        let is_current = self.is_current_model(model.id);
+        let is_current = self.is_current_model(&model.id);
 
         // Selection style
         let base_style = if is_selected {
@@ -194,7 +245,7 @@ impl ModelPicker {
                     base_style
                 },
             ),
-            Span::styled(model.name, title_style),
+            Span::styled(model.name.clone(), title_style),
         ]);
 
         if is_current {
@@ -212,30 +263,34 @@ impl ModelPicker {
         lines.push(title_line);
 
         // Description line
-        let desc_style = if is_selected {
-            Style::default()
-                .bg(palette::MINIMAX_BLUE)
-                .fg(palette::MINIMAX_SILVER)
-        } else {
-            Style::default().fg(palette::TEXT_DIM)
-        };
-        lines.push(Line::from(vec![
-            Span::styled("     ", base_style),
-            Span::styled(model.description, desc_style),
-        ]));
+        if !model.description.is_empty() {
+            let desc_style = if is_selected {
+                Style::default()
+                    .bg(palette::MINIMAX_BLUE)
+                    .fg(palette::MINIMAX_SILVER)
+            } else {
+                Style::default().fg(palette::TEXT_DIM)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("     ", base_style),
+                Span::styled(model.description.clone(), desc_style),
+            ]));
+        }
 
         // Capabilities line
-        let caps_style = if is_selected {
-            Style::default()
-                .bg(palette::MINIMAX_BLUE)
-                .fg(palette::MINIMAX_SILVER)
-        } else {
-            Style::default().fg(palette::TEXT_MUTED)
-        };
-        lines.push(Line::from(vec![
-            Span::styled("     ", base_style),
-            Span::styled(format!("Capabilities: {}", model.capabilities), caps_style),
-        ]));
+        if !model.capabilities.is_empty() {
+            let caps_style = if is_selected {
+                Style::default()
+                    .bg(palette::MINIMAX_BLUE)
+                    .fg(palette::MINIMAX_SILVER)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("     ", base_style),
+                Span::styled(format!("Capabilities: {}", model.capabilities), caps_style),
+            ]));
+        }
 
         // Spacing between items
         lines.push(Line::from(""));
@@ -284,9 +339,16 @@ impl ModalView for ModelPicker {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        // Create a centered popup
+        // Create a centered popup sized for the list, capped to the screen
+        let item_height: u16 = self
+            .models
+            .iter()
+            .map(|m| {
+                1 + u16::from(!m.description.is_empty()) + u16::from(!m.capabilities.is_empty()) + 1
+            })
+            .sum();
         let popup_width = (area.width * 3 / 5).clamp(50, 70);
-        let popup_height = (AVAILABLE_MODELS.len() as u16 * 5 + 6).min(area.height - 4);
+        let popup_height = (item_height + 6).min(area.height.saturating_sub(4).max(6));
         let popup_x = (area.width - popup_width) / 2;
         let popup_y = (area.height - popup_height) / 2;
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -307,20 +369,33 @@ impl ModalView for ModelPicker {
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
 
-        // Model list
-        let items: Vec<ListItem> = AVAILABLE_MODELS
-            .iter()
-            .enumerate()
-            .map(|(i, m)| self.render_model_item(m, i))
-            .collect();
+        if self.models.is_empty() {
+            let empty = Paragraph::new(Line::from(vec![Span::styled(
+                format!("No models found ({})", self.source),
+                Style::default().fg(palette::TEXT_DIM),
+            )]));
+            empty.render(chunks[0], buf);
+        } else {
+            // Model list; ListState keeps the selected row visible when the
+            // list is longer than the popup (common with provider discovery).
+            let items: Vec<ListItem> = self
+                .models
+                .iter()
+                .enumerate()
+                .map(|(i, m)| self.render_model_item(m, i))
+                .collect();
 
-        let models_list = List::new(items);
-        models_list.render(chunks[0], buf);
+            let mut state = ListState::default();
+            state.select(Some(self.selected));
+            let models_list = List::new(items);
+            ratatui::widgets::StatefulWidget::render(&models_list, chunks[0], buf, &mut state);
+        }
 
         // Help footer
         let help_text = format!(
-            "↑/↓ to navigate | Enter to select | Esc to cancel | {} models",
-            AVAILABLE_MODELS.len()
+            "↑/↓ to navigate | Enter to select | Esc to cancel | {} models · {}",
+            self.models.len(),
+            self.source
         );
         let help = Paragraph::new(Line::from(vec![Span::styled(
             help_text,
@@ -336,10 +411,9 @@ pub fn validate_model(model_name: &str) -> Option<&'static ModelInfo> {
     let canonical = match normalized.as_str() {
         "minimax-m3" | "m3" => "MiniMax-M3",
         "minimax-m2.7" | "minimax-2.7" | "m2.7" => "MiniMax-M2.7",
-        "minimax-m2.7-highspeed"
-        | "minimax-2.7-highspeed"
-        | "m2.7-highspeed"
-        | "2.7-highspeed" => "MiniMax-M2.7-highspeed",
+        "minimax-m2.7-highspeed" | "minimax-2.7-highspeed" | "m2.7-highspeed" | "2.7-highspeed" => {
+            "MiniMax-M2.7-highspeed"
+        }
         "minimax-2.5" | "minimax-m2.5" | "m2.5" => "MiniMax-M2.5",
         "minimax-2.5-lightning" | "minimax-m2.5-lightning" | "m2.5-lightning" | "2.5-lightning" => {
             "MiniMax-M2.5-lightning"
@@ -404,10 +478,10 @@ mod tests {
     }
 
     #[test]
-    fn test_model_picker_navigation() {
-        let mut picker = ModelPicker::new("MiniMax-M3".to_string());
-        assert!(!AVAILABLE_MODELS.is_empty());
-        let last_index = AVAILABLE_MODELS.len() - 1;
+    fn test_model_picker_navigation_builtin() {
+        let models = builtin_models();
+        let last_index = models.len() - 1;
+        let mut picker = ModelPicker::new("MiniMax-M3".to_string(), models, "built-in".into());
         assert_eq!(picker.selected, 0);
 
         // Move down through the full list, then wrap to top.
@@ -421,5 +495,36 @@ mod tests {
         // Move up from top and wrap to last.
         picker.select_up();
         assert_eq!(picker.selected, last_index);
+    }
+
+    #[test]
+    fn test_model_picker_preselects_current_discovered_model() {
+        let models = vec![
+            PickerModel::discovered("alpha".into(), None),
+            PickerModel::discovered("beta".into(), Some("Beta Model".into())),
+            PickerModel::discovered("gamma".into(), None),
+        ];
+        let picker = ModelPicker::new("beta".to_string(), models, "test-openai API".into());
+        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.selected_model_id().as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn test_model_picker_discovered_display_name_defaults_to_id() {
+        let model = PickerModel::discovered("gpt-4o".into(), None);
+        assert_eq!(model.name, "gpt-4o");
+        let model = PickerModel::discovered("gpt-4o".into(), Some("GPT-4o".into()));
+        assert_eq!(model.name, "GPT-4o");
+        assert_eq!(model.id, "gpt-4o");
+    }
+
+    #[test]
+    fn test_model_picker_empty_list_is_safe() {
+        let mut picker = ModelPicker::new("anything".to_string(), Vec::new(), "nowhere".into());
+        assert_eq!(picker.selected_model_id(), None);
+        picker.select_down();
+        picker.select_up();
+        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.selected_model_id(), None);
     }
 }

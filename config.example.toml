@@ -38,6 +38,24 @@ provider = "minimax"
 # url = "https://example.com/v1"
 # api_key = "YOUR_PROXY_KEY"
 # default_model = "my-model"
+#
+# [providers.kimi]
+# api = "anthropic"                        # Kimi Coding Plan (api.kimi.com,
+# url = "https://api.kimi.com/coding/v1"   # separate console + key from
+# api_key = "YOUR_KIMI_CODING_KEY"         # api.moonshot.ai)
+# default_model = "k3-256k"
+#
+# [providers.deepseek]
+# api = "openai"
+# url = "https://api.deepseek.com/v1"
+# api_key = "YOUR_DEEPSEEK_API_KEY"
+# default_model = "deepseek-chat"
+#
+# [providers.zai]
+# api = "anthropic"                        # Z.ai Coding Plan endpoint
+# url = "https://api.z.ai/api/anthropic"
+# api_key = "YOUR_ZAI_API_KEY"
+# default_model = "glm-5.3"
 
 # Parsed but currently unused (reserved for future versions):
 # default_image_model = "image-01"

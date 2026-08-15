@@ -1143,9 +1143,58 @@ async fn run_event_loop(
                                         );
                                     }
                                     AppAction::OpenModelPicker => {
+                                        // Discover models from the active provider's API,
+                                        // falling back to the built-in MiniMax catalog.
+                                        let (models, source) = match config.active_provider() {
+                                            Ok(provider) => {
+                                                let source = format!("{} API", provider.name);
+                                                match crate::model_discovery::discover_models(
+                                                    &provider,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(discovered) => (
+                                                        discovered
+                                                            .into_iter()
+                                                            .map(|m| {
+                                                                crate::tui::model_picker::PickerModel::discovered(
+                                                                    m.id, m.display_name,
+                                                                )
+                                                            })
+                                                            .collect(),
+                                                        source,
+                                                    ),
+                                                    Err(err) => {
+                                                        app.add_message(HistoryCell::System {
+                                                            content: format!(
+                                                                "Model discovery from '{}' failed ({err}) — using built-in MiniMax catalog",
+                                                                provider.name
+                                                            ),
+                                                        });
+                                                        (
+                                                            crate::tui::model_picker::builtin_models(),
+                                                            "built-in catalog".to_string(),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!(
+                                                        "Model discovery skipped: {err} — using built-in MiniMax catalog"
+                                                    ),
+                                                });
+                                                (
+                                                    crate::tui::model_picker::builtin_models(),
+                                                    "built-in catalog".to_string(),
+                                                )
+                                            }
+                                        };
                                         app.view_stack.push(
                                             crate::tui::model_picker::ModelPicker::new(
                                                 app.model.clone(),
+                                                models,
+                                                source,
                                             ),
                                         );
                                     }
