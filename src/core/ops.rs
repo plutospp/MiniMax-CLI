@@ -79,6 +79,12 @@ pub enum Op {
 
     /// Update compaction thresholds/prompt.
     SetCompactionConfig { config: CompactionConfig },
+
+    /// Replace the active text LLM client (provider switch).
+    ReloadTextClient {
+        client: crate::client::TextClient,
+        model: Option<String>,
+    },
 }
 
 impl Op {

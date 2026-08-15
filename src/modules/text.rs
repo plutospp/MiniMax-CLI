@@ -16,7 +16,7 @@ use rustyline::validate::Validator;
 use rustyline::{Context as RlContext, Editor, Helper};
 use serde_json::{Value, json};
 
-use crate::client::{MiniMaxClient, MiniMaxTextClient};
+use crate::client::{MiniMaxClient, TextClient};
 use crate::models::{
     CacheControl, ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent,
     SystemBlock, SystemPrompt, Tool, Usage,
@@ -46,7 +46,7 @@ pub struct TextChatOptions {
 // === Public API ===
 
 pub async fn run_minimax_text_chat(
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     options: TextChatOptions,
 ) -> Result<()> {
     let mut messages: Vec<Message> = Vec::new();
@@ -152,7 +152,7 @@ pub fn parse_tool_choice(choice: Option<&str>) -> Result<Option<Value>> {
 
 #[allow(clippy::too_many_lines)]
 async fn process_minimax_text_turn(
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     options: &TextChatOptions,
     messages: &mut Vec<Message>,
     user_input: &str,
@@ -213,7 +213,7 @@ async fn process_minimax_text_turn(
                         block_types.insert(index, "thinking".to_string());
                         print!(
                             "\n{}\n",
-                            "Thinking 💭"
+                            "Thinking ??"
                                 .truecolor(orange_r, orange_g, orange_b)
                                 .dimmed()
                         );
@@ -323,7 +323,7 @@ async fn process_minimax_text_turn(
                 ContentBlock::Thinking { thinking } => {
                     println!(
                         "{}",
-                        "\nThinking 💭"
+                        "\nThinking ??"
                             .truecolor(orange_r, orange_g, orange_b)
                             .dimmed()
                     );
@@ -576,29 +576,29 @@ fn print_session_info(options: &TextChatOptions, messages: usize, tools: usize) 
     let width = 56usize;
     let (blue_r, blue_g, blue_b) = palette::MINIMAX_BLUE_RGB;
     let header = "Session Info";
-    println!("┌{}┐", "─".repeat(width));
+    println!("?{}?", "?".repeat(width));
     println!(
-        "│{:^width$}│",
+        "?{:^width$}?",
         header.truecolor(blue_r, blue_g, blue_b).bold(),
         width = width
     );
-    println!("├{}┤", "─".repeat(width));
+    println!("?{}?", "?".repeat(width));
     println!(
-        "│ {:<width$}│",
+        "? {:<width$}?",
         format!("Model: {}", options.model),
         width = width - 1
     );
     println!(
-        "│ {:<width$}│",
+        "? {:<width$}?",
         format!("Messages: {}", messages),
         width = width - 1
     );
     println!(
-        "│ {:<width$}│",
+        "? {:<width$}?",
         format!("Tools: {}", tools),
         width = width - 1
     );
-    println!("└{}┘", "─".repeat(width));
+    println!("?{}?", "?".repeat(width));
     println!();
 }
 
@@ -745,7 +745,7 @@ fn history_path() -> Option<std::path::PathBuf> {
 
 async fn handle_line_minimax_text(
     line: String,
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     options: &TextChatOptions,
     messages: &mut Vec<Message>,
     stats: &mut SessionStats,

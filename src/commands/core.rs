@@ -61,39 +61,63 @@ use crate::tui::model_picker::validate_model;
 /// When called with an argument, validates and sets the model directly.
 pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     if let Some(name) = model_name {
-        // Validate the model name
-        if let Some(model_info) = validate_model(name) {
-            let old_model = app.model.clone();
-            let new_model = model_info.id.to_string();
-            app.model = new_model.clone();
-
-            // Persist to settings
-            let mut settings = Settings::load().unwrap_or_default();
-            settings.default_model = Some(new_model.clone());
-            if let Err(e) = settings.save() {
-                return CommandResult::message(format!(
-                    "Model changed: {old_model} → {new_model} (failed to save: {e})"
-                ));
+        // Known MiniMax catalog models, or free-form for other providers.
+        let (new_model, description) = if let Some(model_info) = validate_model(name) {
+            (model_info.id.to_string(), model_info.description.to_string())
+        } else if app.provider != "minimax" {
+            let trimmed = name.trim().to_string();
+            if trimmed.is_empty() {
+                return CommandResult::error("Model name cannot be empty".to_string());
             }
-
-            CommandResult::message(format!(
-                "Model changed: {old_model} → {new_model} (saved)\n\n{}",
-                model_info.description
-            ))
+            (
+                trimmed,
+                format!("Custom model for provider '{}'", app.provider),
+            )
         } else {
-            // Invalid model - show available models
             let available = crate::tui::model_picker::AVAILABLE_MODELS
                 .iter()
                 .map(|m| format!("  • {} - {}", m.id, m.name))
                 .collect::<Vec<_>>()
                 .join("\n");
-            CommandResult::error(format!(
+            return CommandResult::error(format!(
                 "Unknown model: '{name}'\n\nAvailable models:\n{available}"
-            ))
+            ));
+        };
+
+        let old_model = app.model.clone();
+        app.model = new_model.clone();
+
+        let mut settings = Settings::load().unwrap_or_default();
+        settings.default_model = Some(new_model.clone());
+        if let Err(e) = settings.save() {
+            return CommandResult::message(format!(
+                "Model changed: {old_model} → {new_model} (failed to save: {e})"
+            ));
         }
+
+        CommandResult::message(format!(
+            "Model changed: {old_model} → {new_model} (saved)\n\n{description}"
+        ))
     } else {
-        // No argument - open the interactive picker
         CommandResult::action(crate::tui::app::AppAction::OpenModelPicker)
+    }
+}
+
+/// Switch or view the active LLM provider.
+pub fn provider(_app: &mut App, name: Option<&str>) -> CommandResult {
+    if let Some(name) = name {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return CommandResult::error("Provider name cannot be empty");
+        }
+        CommandResult::with_message_and_action(
+            format!("Switching provider to {trimmed}..."),
+            AppAction::SwitchProvider {
+                name: trimmed.to_string(),
+            },
+        )
+    } else {
+        CommandResult::action(AppAction::OpenProviderPicker)
     }
 }
 

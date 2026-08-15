@@ -13,7 +13,7 @@ use crate::logging;
 use anyhow::Result;
 use std::fmt::Write;
 
-use crate::client::MiniMaxTextClient;
+use crate::client::TextClient;
 use crate::models::{
     CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, Tool,
 };
@@ -136,7 +136,7 @@ pub fn should_compact(messages: &[Message], config: &CompactionConfig) -> bool {
 }
 
 pub async fn compact_messages(
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     messages: &[Message],
     config: &CompactionConfig,
     active_model: &str,
@@ -186,7 +186,7 @@ pub async fn compact_messages(
 }
 
 async fn create_summary(
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     messages: &[Message],
     model: &str,
     compact_prompt: Option<&str>,
@@ -319,13 +319,13 @@ pub fn merge_system_prompts(
 /// If compaction is not needed, returns (messages.clone(), system.clone(), false)
 ///
 /// # Arguments
-/// * `client` - MiniMaxTextClient for making summary API calls
+/// * `client` - TextClient for making summary API calls
 /// * `messages` - Current conversation messages
 /// * `system` - Current system prompt
 /// * `tools` - Current tools (for token estimation)
 /// * `config` - Compaction configuration
 pub async fn maybe_compact(
-    client: &MiniMaxTextClient,
+    client: &TextClient,
     messages: &[Message],
     system: &Option<SystemPrompt>,
     tools: &Option<Vec<Tool>>,

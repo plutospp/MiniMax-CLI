@@ -6,6 +6,7 @@ use crate::palette;
 use crate::tui::approval::ReviewDecision;
 use crate::tui::history_picker::HistoryPickerResult;
 use crate::tui::model_picker::ModelPickerResult;
+use crate::tui::provider_picker::ProviderPickerResult;
 use crate::tui::session_picker::SessionPickerResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub enum ModalKind {
     Help,
     SessionPicker,
     ModelPicker,
+    ProviderPicker,
     HistoryPicker,
     Search,
 }
@@ -31,6 +33,9 @@ pub enum ViewEvent {
     },
     ModelPickerResult {
         result: ModelPickerResult,
+    },
+    ProviderPickerResult {
+        result: ProviderPickerResult,
     },
     HistoryPickerResult {
         result: HistoryPickerResult,

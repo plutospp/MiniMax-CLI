@@ -207,6 +207,8 @@ pub struct App {
     pub is_loading: bool,
     pub status_message: Option<String>,
     pub model: String,
+    /// Active LLM provider name from config.
+    pub provider: String,
     pub workspace: PathBuf,
     pub skills_dir: PathBuf,
     #[allow(dead_code)]
@@ -455,7 +457,24 @@ impl App {
         let show_tool_details = settings.show_tool_details;
         let max_input_history = settings.max_input_history;
         let ui_theme = palette::ui_theme(&settings.theme);
-        let model = settings.default_model.clone().unwrap_or(model);
+        let model = settings
+            .default_model
+            .clone()
+            .unwrap_or(model);
+        let provider = settings
+            .default_provider
+            .clone()
+            .or_else(|| config.provider.clone())
+            .unwrap_or_else(|| config.active_provider_name());
+        // If settings restored a provider, prefer that provider's default model when
+        // no explicit default_model was saved.
+        let model = if settings.default_model.is_none() {
+            let mut cfg = config.clone();
+            cfg.provider = Some(provider.clone());
+            cfg.resolved_default_text_model()
+        } else {
+            model
+        };
 
         // Start in YOLO mode if --yolo flag was passed
         let preferred_mode = match settings.default_mode.as_str() {
@@ -533,6 +552,7 @@ impl App {
             is_loading: false,
             status_message: None,
             model,
+            provider,
             workspace: workspace.clone(),
             skills_dir,
             system_prompt: None,
@@ -1321,6 +1341,10 @@ pub enum AppAction {
     OpenSessionPicker,
     /// Open the model picker modal
     OpenModelPicker,
+    /// Open the provider picker modal
+    OpenProviderPicker,
+    /// Switch to a named LLM provider and reload the text client
+    SwitchProvider { name: String },
     /// Open the command history picker modal
     OpenHistoryPicker,
     /// Reload configuration from disk

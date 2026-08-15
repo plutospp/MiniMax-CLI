@@ -118,6 +118,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/model [name]",
     },
     CommandInfo {
+        name: "provider",
+        aliases: &["providers"],
+        description: "Switch LLM provider (interactive picker or direct name)",
+        usage: "/provider [name]",
+    },
+    CommandInfo {
         name: "queue",
         aliases: &["queued"],
         description: "View or edit queued messages",
@@ -399,6 +405,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "reset" => session::reset(app),
         "exit" | "quit" | "q" => core::exit(),
         "model" => core::model(app, arg),
+        "provider" | "providers" => core::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app, arg),
         "jobs" => jobs::jobs(app, arg),

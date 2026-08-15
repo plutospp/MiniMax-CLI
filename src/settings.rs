@@ -31,6 +31,8 @@ pub struct Settings {
     pub input_history_max: usize,
     /// Default model to use
     pub default_model: Option<String>,
+    /// Default LLM provider name
+    pub default_provider: Option<String>,
     /// Show tutorial on first startup
     pub show_tutorial: bool,
 }
@@ -48,6 +50,7 @@ impl Default for Settings {
             input_history_path: default_input_history_path(),
             input_history_max: 1000,
             default_model: None,
+            default_provider: None,
             show_tutorial: true,
         }
     }
@@ -159,6 +162,9 @@ impl Settings {
             "default_model" | "model" => {
                 self.default_model = Some(value.to_string());
             }
+            "default_provider" | "provider" => {
+                self.default_provider = Some(value.to_string());
+            }
             "show_tutorial" | "tutorial" => {
                 self.show_tutorial = parse_bool(value)?;
             }
@@ -193,6 +199,10 @@ impl Settings {
             "  default_model:      {}",
             self.default_model.as_deref().unwrap_or("(default)")
         ));
+        lines.push(format!(
+            "  default_provider:   {}",
+            self.default_provider.as_deref().unwrap_or("(default)")
+        ));
         lines.push(format!("  show_tutorial:      {}", self.show_tutorial));
         lines.push(String::new());
         lines.push(format!(
@@ -218,6 +228,7 @@ impl Settings {
             ("input_history_path", "Path to input history file"),
             ("input_history_max", "Max input history entries to persist"),
             ("default_model", "Default model name"),
+            ("default_provider", "Default LLM provider name"),
             ("show_tutorial", "Show tutorial on startup: on/off"),
         ]
     }

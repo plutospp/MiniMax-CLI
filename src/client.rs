@@ -9,10 +9,11 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
-use crate::config::{Config, RetryPolicy};
+use crate::config::{ActiveProvider, Config, ProviderApi, RetryPolicy};
 use crate::llm_client::{LlmClient, StreamEventBox};
 use crate::logging;
 use crate::models::{MessageRequest, MessageResponse, StreamEvent};
+use crate::openai_client::OpenAiTextClient;
 
 // === Types ===
 
@@ -260,12 +261,31 @@ impl MiniMaxTextClient {
     /// # }
     /// ```
     pub fn with_model(config: &Config, model: String) -> Result<Self> {
-        let base_url = config.minimax_text_base_url();
-        let api_key = config.minimax_text_api_key()?;
-        let retry = config.retry_policy();
-        let is_minimax = is_minimax_base_url(&base_url);
+        let provider = config.active_provider()?;
+        Self::from_provider(&provider, model, config.retry_policy())
+    }
 
-        logging::info(format!("MiniMax text API base URL: {base_url}"));
+    /// Create from a resolved Anthropic-compatible provider.
+    pub fn from_provider(
+        provider: &ActiveProvider,
+        model: String,
+        retry: RetryPolicy,
+    ) -> Result<Self> {
+        let base_url = {
+            let messages = provider.anthropic_messages_url();
+            // Store the parent of /v1/messages as base_url (existing code appends /v1/messages).
+            messages
+                .trim_end_matches("/v1/messages")
+                .trim_end_matches('/')
+                .to_string()
+        };
+        let api_key = provider.api_key.clone();
+        let is_minimax = is_minimax_base_url(&provider.url) || is_minimax_base_url(&base_url);
+
+        logging::info(format!(
+            "Anthropic-compatible text API base URL ({}): {base_url}",
+            provider.name
+        ));
         logging::info(format!(
             "Retry policy: enabled={}, max_retries={}, initial_delay={}s, max_delay={}s",
             retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
@@ -329,7 +349,11 @@ impl MiniMaxTextClient {
 
 // === Retry + Streaming Helpers ===
 
-async fn send_with_retry<F>(policy: &RetryPolicy, mut build: F) -> Result<reqwest::Response>
+/// Shared retry helper for Anthropic and OpenAI text clients.
+pub(crate) async fn send_with_retry<F>(
+    policy: &RetryPolicy,
+    mut build: F,
+) -> Result<reqwest::Response>
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
@@ -588,5 +612,111 @@ impl LlmClient for MiniMaxCodingClient {
 
         let stream = parse_sse_stream(response.bytes_stream());
         Ok(Pin::from(Box::new(stream)))
+    }
+}
+
+/// Protocol-agnostic text chat client used by the engine and tools.
+#[derive(Clone)]
+pub enum TextClient {
+    Anthropic(MiniMaxTextClient),
+    OpenAi(OpenAiTextClient),
+}
+
+impl std::fmt::Debug for TextClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anthropic(_) => write!(f, "TextClient::Anthropic"),
+            Self::OpenAi(c) => write!(f, "TextClient::OpenAi({})", c.provider_name()),
+        }
+    }
+}
+
+impl TextClient {
+    /// Build from the active provider in config.
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let provider = config.active_provider()?;
+        Self::from_provider(&provider, config.retry_policy())
+    }
+
+    /// Build from a resolved provider.
+    pub fn from_provider(provider: &ActiveProvider, retry: RetryPolicy) -> Result<Self> {
+        match provider.api {
+            ProviderApi::Anthropic => Ok(Self::Anthropic(MiniMaxTextClient::from_provider(
+                provider,
+                provider.default_model.clone(),
+                retry,
+            )?)),
+            ProviderApi::OpenAi => Ok(Self::OpenAi(OpenAiTextClient::from_provider(
+                provider, retry,
+            )?)),
+        }
+    }
+
+    /// Provider display name (`minimax`, `openai`, ...).
+    #[must_use]
+    pub fn provider_name(&self) -> &str {
+        match self {
+            Self::Anthropic(_) => "minimax",
+            Self::OpenAi(c) => c.provider_name(),
+        }
+    }
+
+    /// Whether this client talks OpenAI Chat Completions.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn is_openai(&self) -> bool {
+        matches!(self, Self::OpenAi(_))
+    }
+
+    /// Whether this client is Anthropic Messages (including MiniMax).
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn is_anthropic(&self) -> bool {
+        matches!(self, Self::Anthropic(_))
+    }
+
+    #[must_use]
+    pub fn default_model(&self) -> &str {
+        match self {
+            Self::Anthropic(c) => c.default_model(),
+            Self::OpenAi(c) => c.default_model(),
+        }
+    }
+
+    /// Non-streaming completion.
+    pub async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
+        match self {
+            Self::Anthropic(c) => MiniMaxTextClient::create_message(c, request).await,
+            Self::OpenAi(c) => c.create_message(request).await,
+        }
+    }
+
+    /// Streaming completion as Anthropic-shaped events.
+    pub async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
+        match self {
+            Self::Anthropic(c) => LlmClient::create_message_stream(c, request).await,
+            Self::OpenAi(c) => c.create_message_stream(request).await,
+        }
+    }
+}
+
+impl LlmClient for TextClient {
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Anthropic(_) => "minimax",
+            Self::OpenAi(_) => "openai",
+        }
+    }
+
+    fn model(&self) -> &str {
+        self.default_model()
+    }
+
+    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
+        TextClient::create_message(self, request).await
+    }
+
+    async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
+        TextClient::create_message_stream(self, request).await
     }
 }

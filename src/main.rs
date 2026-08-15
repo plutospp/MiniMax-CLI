@@ -25,6 +25,7 @@ mod mcp;
 mod mcp_server;
 mod models;
 mod modules;
+mod openai_client;
 mod palette;
 mod pricing;
 mod project_context;
@@ -56,12 +57,12 @@ use crate::llm_client::LlmClient;
     version,
     about = "MiniMax CLI - AI Coding Assistant",
     long_about = "MiniMax CLI - Professional AI Coding Assistant\n\n\
-    ✨ MiniMax M2.5: General-purpose AI chat\n\
-    🔷 MiniMax Coding API: Specialized code generation and review\n\
-    📚 RLM Mode: Recursive Language Model with context management\n\
-    🎯 Duo Mode: Player-Coach adversarial cooperation for autocoding\n\n\
-    🚀 Get started: Just run 'minimax' to start chatting!\n\
-    📖 Learn more: Run 'minimax modes' to see all available modes\n\n\
+    ? MiniMax M2.5: General-purpose AI chat\n\
+    ?? MiniMax Coding API: Specialized code generation and review\n\
+    ?? RLM Mode: Recursive Language Model with context management\n\
+    ?? Duo Mode: Player-Coach adversarial cooperation for autocoding\n\n\
+    ?? Get started: Just run 'minimax' to start chatting!\n\
+    ?? Learn more: Run 'minimax modes' to see all available modes\n\n\
     Not affiliated with MiniMax Inc.",
     after_help = "Examples:\
     \\n   minimax                    # Start interactive chat\
@@ -101,6 +102,10 @@ struct Cli {
     /// Config profile name
     #[arg(long)]
     profile: Option<String>,
+
+    /// Active LLM provider name from config `[providers]`
+    #[arg(long)]
+    provider: Option<String>,
 
     /// Workspace directory for file operations
     #[arg(short, long)]
@@ -676,8 +681,7 @@ async fn main() -> Result<()> {
                 let model = args
                     .model
                     .clone()
-                    .or_else(|| config.default_text_model.clone())
-                    .unwrap_or_else(|| "MiniMax-M2.5".to_string());
+                    .unwrap_or_else(|| config.resolved_default_text_model());
                 if args.auto || cli.yolo {
                     run_exec_agent(&config, &model, &args.prompt).await
                 } else {
@@ -705,10 +709,7 @@ async fn main() -> Result<()> {
         .workspace
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let model = config
-        .default_text_model
-        .clone()
-        .unwrap_or_else(|| "MiniMax-M2.5".to_string());
+    let model = config.resolved_default_text_model();
     let max_subagents = cli
         .max_subagents
         .map_or_else(|| config.max_subagents(), |value| value.clamp(1, 5));
@@ -757,6 +758,14 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
         .clone()
         .or_else(|| std::env::var("MINIMAX_PROFILE").ok());
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
+    if let Some(provider) = cli
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        config.provider = Some(provider.to_string());
+    }
     cli.feature_toggles.apply(&mut config)?;
     Ok(config)
 }
@@ -939,17 +948,17 @@ fn run_modes() {
     println!();
     println!(
         "{}",
-        "╔═══════════════════════════════════════════════════════════════════╗"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "║                     MiniMax CLI Modes                             ║"
+        "?                     MiniMax CLI Modes                             ?"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "╚═══════════════════════════════════════════════════════════════════╝"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!();
@@ -957,7 +966,7 @@ fn run_modes() {
     // Interactive Chat (default)
     println!(
         "{}",
-        "✨ Interactive Chat"
+        "? Interactive Chat"
             .truecolor(green_r, green_g, green_b)
             .bold()
     );
@@ -966,7 +975,7 @@ fn run_modes() {
     println!();
 
     // RLM Mode
-    println!("{}  📚 RLM Mode", "🔷".truecolor(blue_r, blue_g, blue_b));
+    println!("{}  ?? RLM Mode", "??".truecolor(blue_r, blue_g, blue_b));
     println!(
         "   Run: {}",
         "minimax rlm".truecolor(blue_r, blue_g, blue_b)
@@ -978,7 +987,7 @@ fn run_modes() {
     println!();
 
     // Duo Mode
-    println!("{}  🎯 Duo Mode", "🔷".truecolor(blue_r, blue_g, blue_b));
+    println!("{}  ?? Duo Mode", "??".truecolor(blue_r, blue_g, blue_b));
     println!(
         "   Run: {}",
         "minimax duo".truecolor(blue_r, blue_g, blue_b)
@@ -991,8 +1000,8 @@ fn run_modes() {
 
     // Coding API
     println!(
-        "{}  🔷 MiniMax Coding API",
-        "🔷".truecolor(blue_r, blue_g, blue_b)
+        "{}  ?? MiniMax Coding API",
+        "??".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "   Run: {}",
@@ -1006,7 +1015,7 @@ fn run_modes() {
     // Other commands
     println!(
         "{}  Other Commands",
-        "📋".truecolor(orange_r, orange_g, orange_b).bold()
+        "??".truecolor(orange_r, orange_g, orange_b).bold()
     );
     println!("   minimax doctor     - Run system diagnostics");
     println!("   minimax sessions   - List saved sessions");
@@ -1092,50 +1101,50 @@ fn print_rlm_info() {
     println!();
     println!(
         "{}",
-        "╔═══════════════════════════════════════════════════════════════════╗"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "║                    RLM Mode - Help                                 ║"
+        "?                    RLM Mode - Help                                 ?"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "╚═══════════════════════════════════════════════════════════════════╝"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!(
         "{}  Recursive Language Model - context management",
-        "📚".truecolor(blue_r, blue_g, blue_b)
+        "??".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("Commands:");
     println!();
     println!(
         "  {}  minimax rlm repl               Enter interactive REPL",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax rlm load <path>        Load file into context",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax rlm search <pattern>   Search in context",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax rlm status             Show loaded contexts",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax rlm save <path>        Save session",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax rlm load-session <path> Load session",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("REPL Expressions:");
@@ -1189,23 +1198,23 @@ fn print_duo_info() {
     println!();
     println!(
         "{}",
-        "╔═══════════════════════════════════════════════════════════════════╗"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "║                    Duo Mode - Help                                 ║"
+        "?                    Duo Mode - Help                                 ?"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "╚═══════════════════════════════════════════════════════════════════╝"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!(
         "{}  Player-Coach adversarial cooperation for autocoding",
-        "🎯".truecolor(blue_r, blue_g, blue_b)
+        "??".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("The Duo pattern (from g3 paper):");
@@ -1217,15 +1226,15 @@ fn print_duo_info() {
     println!();
     println!(
         "  {}  minimax duo start              Start new autocoding session",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax duo continue <id>      Continue existing session",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax duo sessions           List all sessions",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("Options:");
@@ -1291,34 +1300,34 @@ fn print_coding_info() {
     println!();
     println!(
         "{}",
-        "╔═══════════════════════════════════════════════════════════════════╗"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "║                   Coding Mode - Help                               ║"
+        "?                   Coding Mode - Help                               ?"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "{}",
-        "╚═══════════════════════════════════════════════════════════════════╝"
+        "?????????????????????????????????????????????????????????????????????"
             .truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!(
         "{}  MiniMax Coding API - specialized code generation and review",
-        "🔷".truecolor(blue_r, blue_g, blue_b)
+        "??".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("Commands:");
     println!();
     println!(
         "  {}  minimax coding complete <prompt>  Generate code",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!(
         "  {}  minimax coding review <path>      Review code",
-        "→".truecolor(blue_r, blue_g, blue_b)
+        "?".truecolor(blue_r, blue_g, blue_b)
     );
     println!();
     println!("Options for 'complete':");
@@ -1366,7 +1375,7 @@ async fn run_doctor() {
     if config_file.exists() {
         println!(
             "  {} config.toml found at {}",
-            "✓".truecolor(green_r, green_g, green_b),
+            "?".truecolor(green_r, green_g, green_b),
             config_file.display()
         );
     } else {
@@ -1382,7 +1391,7 @@ async fn run_doctor() {
     let has_api_key = if std::env::var("MINIMAX_API_KEY").is_ok() {
         println!(
             "  {} MINIMAX_API_KEY is set",
-            "✓".truecolor(green_r, green_g, green_b)
+            "?".truecolor(green_r, green_g, green_b)
         );
         true
     } else {
@@ -1393,13 +1402,13 @@ async fn run_doctor() {
         if key_in_config {
             println!(
                 "  {} MiniMax API key found in config",
-                "✓".truecolor(green_r, green_g, green_b)
+                "?".truecolor(green_r, green_g, green_b)
             );
             true
         } else {
             println!(
                 "  {} MiniMax API key not configured",
-                "✗".truecolor(red_r, red_g, red_b)
+                "?".truecolor(red_r, red_g, red_b)
             );
             println!("    Run 'minimax' to configure interactively, or set MINIMAX_API_KEY");
             false
@@ -1412,7 +1421,7 @@ async fn run_doctor() {
     if has_api_key {
         print!(
             "  {} Testing connection to MiniMax API...",
-            "·".truecolor(muted_r, muted_g, muted_b)
+            "?".truecolor(muted_r, muted_g, muted_b)
         );
         // Flush to show progress immediately
         use std::io::Write;
@@ -1422,7 +1431,7 @@ async fn run_doctor() {
             Ok(model) => {
                 println!(
                     "\r  {} API connection successful (model: {})",
-                    "✓".truecolor(green_r, green_g, green_b),
+                    "?".truecolor(green_r, green_g, green_b),
                     model
                 );
             }
@@ -1430,60 +1439,60 @@ async fn run_doctor() {
                 let error_msg = e.to_string();
                 println!(
                     "\r  {} API connection failed",
-                    "✗".truecolor(red_r, red_g, red_b)
+                    "?".truecolor(red_r, red_g, red_b)
                 );
                 // Provide helpful diagnostics based on error type
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                    println!("    {}", "✗ Invalid API key".truecolor(red_r, red_g, red_b));
-                    println!("    → Check your MINIMAX_API_KEY or config.toml");
-                    println!("    → Verify your API key is active at https://platform.minimax.io");
-                    println!("    → Keys look like: sk-api-...");
+                    println!("    {}", "? Invalid API key".truecolor(red_r, red_g, red_b));
+                    println!("    ? Check your MINIMAX_API_KEY or config.toml");
+                    println!("    ? Verify your API key is active at https://platform.minimax.io");
+                    println!("    ? Keys look like: sk-api-...");
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
                     println!(
                         "    {}",
-                        "✗ API key lacks permissions".truecolor(red_r, red_g, red_b)
+                        "? API key lacks permissions".truecolor(red_r, red_g, red_b)
                     );
-                    println!("    → Verify your API key is active at https://platform.minimax.io");
-                    println!("    → You may need to generate a new API key");
+                    println!("    ? Verify your API key is active at https://platform.minimax.io");
+                    println!("    ? You may need to generate a new API key");
                 } else if error_msg.contains("timeout") || error_msg.contains("Timeout") {
                     println!(
                         "    {}",
-                        "✗ Connection timed out".truecolor(red_r, red_g, red_b)
+                        "? Connection timed out".truecolor(red_r, red_g, red_b)
                     );
-                    println!("    → Check your network connection");
-                    println!("    → Try again - this may be a temporary issue");
+                    println!("    ? Check your network connection");
+                    println!("    ? Try again - this may be a temporary issue");
                     println!(
-                        "    → China users: try setting MINIMAX_BASE_URL=https://api.minimaxi.com"
+                        "    ? China users: try setting MINIMAX_BASE_URL=https://api.minimaxi.com"
                     );
                 } else if error_msg.contains("dns") || error_msg.contains("resolve") {
                     println!(
                         "    {}",
-                        "✗ DNS resolution failed".truecolor(red_r, red_g, red_b)
+                        "? DNS resolution failed".truecolor(red_r, red_g, red_b)
                     );
-                    println!("    → Check your network connection");
-                    println!("    → Verify you can reach api.minimax.io");
+                    println!("    ? Check your network connection");
+                    println!("    ? Verify you can reach api.minimax.io");
                 } else if error_msg.contains("certificate") || error_msg.contains("SSL") {
                     println!(
                         "    {}",
-                        "✗ SSL/certificate error".truecolor(red_r, red_g, red_b)
+                        "? SSL/certificate error".truecolor(red_r, red_g, red_b)
                     );
-                    println!("    → Check your system clock and date");
-                    println!("    → Your SSL certificates may be outdated");
+                    println!("    ? Check your system clock and date");
+                    println!("    ? Your SSL certificates may be outdated");
                 } else if error_msg.contains("connection refused") {
                     println!(
                         "    {}",
-                        "✗ Connection refused".truecolor(red_r, red_g, red_b)
+                        "? Connection refused".truecolor(red_r, red_g, red_b)
                     );
-                    println!("    → The API server may be down");
-                    println!("    → Check https://status.minimax.io for outages");
-                    println!("    → Try again later");
+                    println!("    ? The API server may be down");
+                    println!("    ? Check https://status.minimax.io for outages");
+                    println!("    ? Try again later");
                 } else if error_msg.contains("429") {
-                    println!("    {}", "✗ Rate limited".truecolor(red_r, red_g, red_b));
-                    println!("    → You've made too many requests");
-                    println!("    → Wait a moment and try again");
+                    println!("    {}", "? Rate limited".truecolor(red_r, red_g, red_b));
+                    println!("    ? You've made too many requests");
+                    println!("    ? Wait a moment and try again");
                 } else {
                     // Show truncated error with helpful prefix
-                    println!("    {}", "✗ Error:".truecolor(red_r, red_g, red_b));
+                    println!("    {}", "? Error:".truecolor(red_r, red_g, red_b));
                     // Truncate very long error messages
                     let truncated = if error_msg.len() > 200 {
                         &error_msg[..200]
@@ -1494,18 +1503,18 @@ async fn run_doctor() {
                     println!();
                     println!(
                         "    {} Need more help?",
-                        "→".truecolor(blue_r, blue_g, blue_b).bold()
+                        "?".truecolor(blue_r, blue_g, blue_b).bold()
                     );
-                    println!("    → Run with -v for verbose logging");
-                    println!("    → Check https://github.com/Hmbown/MiniMax-CLI/issues");
+                    println!("    ? Run with -v for verbose logging");
+                    println!("    ? Check https://github.com/Hmbown/MiniMax-CLI/issues");
                 }
 
                 // Quick fix section
                 println!();
                 println!("    {}", "Quick fixes:".bold());
-                println!("    → export MINIMAX_API_KEY='your-key-here'");
+                println!("    ? export MINIMAX_API_KEY='your-key-here'");
                 println!(
-                    "    → Run {} again to verify",
+                    "    ? Run {} again to verify",
                     "minimax doctor".truecolor(blue_r, blue_g, blue_b)
                 );
             }
@@ -1513,15 +1522,15 @@ async fn run_doctor() {
     } else {
         println!(
             "  {} Skipped (no API key configured)",
-            "·".truecolor(muted_r, muted_g, muted_b)
+            "?".truecolor(muted_r, muted_g, muted_b)
         );
         // Help users who don't have an API key
         println!();
         println!("    {}", "To get started:".bold());
         println!("    1. Get an API key from https://platform.minimax.io");
         println!("    2. Either:");
-        println!("       → Set environment variable: export MINIMAX_API_KEY='your-key'");
-        println!("       → Or create config: ~/.minimax/config.toml");
+        println!("       ? Set environment variable: export MINIMAX_API_KEY='your-key'");
+        println!("       ? Or create config: ~/.minimax/config.toml");
         println!(
             "    3. Run {} to verify",
             "minimax doctor".truecolor(blue_r, blue_g, blue_b)
@@ -1535,7 +1544,7 @@ async fn run_doctor() {
     if mcp_config.exists() {
         println!(
             "  {} mcp.json found",
-            "✓".truecolor(green_r, green_g, green_b)
+            "?".truecolor(green_r, green_g, green_b)
         );
         if let Ok(content) = std::fs::read_to_string(&mcp_config)
             && let Ok(config) = serde_json::from_str::<crate::mcp::McpConfig>(&content)
@@ -1543,12 +1552,12 @@ async fn run_doctor() {
             if config.servers.is_empty() {
                 println!(
                     "  {} 0 server(s) configured",
-                    "·".truecolor(muted_r, muted_g, muted_b)
+                    "?".truecolor(muted_r, muted_g, muted_b)
                 );
             } else {
                 println!(
                     "  {} {} server(s) configured",
-                    "·".truecolor(muted_r, muted_g, muted_b),
+                    "?".truecolor(muted_r, muted_g, muted_b),
                     config.servers.len()
                 );
                 for name in config.servers.keys() {
@@ -1559,7 +1568,7 @@ async fn run_doctor() {
     } else {
         println!(
             "  {} mcp.json not found (no MCP servers)",
-            "·".truecolor(muted_r, muted_g, muted_b)
+            "?".truecolor(muted_r, muted_g, muted_b)
         );
     }
 
@@ -1573,13 +1582,13 @@ async fn run_doctor() {
             .unwrap_or(0);
         println!(
             "  {} skills directory found ({} items)",
-            "✓".truecolor(green_r, green_g, green_b),
+            "?".truecolor(green_r, green_g, green_b),
             skill_count
         );
     } else {
         println!(
             "  {} skills directory not found",
-            "·".truecolor(muted_r, muted_g, muted_b)
+            "?".truecolor(muted_r, muted_g, muted_b)
         );
     }
 
@@ -1594,7 +1603,7 @@ async fn run_doctor() {
         if std::path::Path::new("/usr/bin/sandbox-exec").exists() {
             println!(
                 "  {} macOS sandbox available",
-                "✓".truecolor(green_r, green_g, green_b)
+                "?".truecolor(green_r, green_g, green_b)
             );
         } else {
             println!(
@@ -1615,11 +1624,11 @@ async fn run_doctor() {
 
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity() -> Result<String> {
-    use crate::client::MiniMaxTextClient;
+    use crate::client::TextClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
     let config = Config::load(None, None)?;
-    let client = MiniMaxTextClient::new(&config)?;
+    let client = TextClient::from_config(&config)?;
     let model = client.model().to_string();
 
     // Minimal request: single word prompt, 1 max token
@@ -1756,7 +1765,7 @@ fn init_project() -> Result<()> {
         Ok(path) => {
             println!(
                 "{} Created {}",
-                "✓".truecolor(green_r, green_g, green_b),
+                "?".truecolor(green_r, green_g, green_b),
                 path.display()
             );
             println!();
@@ -1766,7 +1775,7 @@ fn init_project() -> Result<()> {
         Err(e) => {
             println!(
                 "{} Failed to create AGENTS.md: {}",
-                "✗".truecolor(red_r, red_g, red_b),
+                "?".truecolor(red_r, red_g, red_b),
                 e
             );
         }
@@ -1776,10 +1785,10 @@ fn init_project() -> Result<()> {
 }
 
 async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> {
-    use crate::client::MiniMaxTextClient;
+    use crate::client::TextClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
-    let client = MiniMaxTextClient::new(config)?;
+    let client = TextClient::from_config(config)?;
 
     let request = MessageRequest {
         model: model.to_string(),
@@ -1812,10 +1821,10 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
     Ok(())
 }
 
-// ─── Review subcommand ───────────────────────────────────────────────────
+// ??? Review subcommand ???????????????????????????????????????????????????
 
 async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
-    use crate::client::MiniMaxTextClient;
+    use crate::client::TextClient;
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
     let diff = collect_diff(&args)?;
@@ -1825,8 +1834,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
 
     let model = args
         .model
-        .or_else(|| config.default_text_model.clone())
-        .unwrap_or_else(|| "MiniMax-M2.5".to_string());
+        .unwrap_or_else(|| config.resolved_default_text_model());
 
     let system = SystemPrompt::Text(
         "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, \
@@ -1837,7 +1845,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let user_prompt =
         format!("Review the following diff and provide feedback:\n\n{diff}\n\nEnd of diff.");
 
-    let client = MiniMaxTextClient::new(config)?;
+    let client = TextClient::from_config(config)?;
     let request = MessageRequest {
         model,
         messages: vec![Message {
@@ -1897,10 +1905,10 @@ fn collect_diff(args: &ReviewArgs) -> Result<String> {
     Ok(diff)
 }
 
-// ─── Exec subcommand (agentic headless) ──────────────────────────────────
+// ??? Exec subcommand (agentic headless) ??????????????????????????????????
 
 async fn run_exec_agent(config: &Config, model: &str, prompt: &str) -> Result<()> {
-    use crate::client::MiniMaxTextClient;
+    use crate::client::TextClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
     use crate::tools::ToolRegistryBuilder;
     use crate::tools::spec::ToolContext;
@@ -1915,7 +1923,7 @@ async fn run_exec_agent(config: &Config, model: &str, prompt: &str) -> Result<()
         .with_full_agent_tools(true, todo_list, plan_state)
         .build(context);
 
-    let client = MiniMaxTextClient::new(config)?;
+    let client = TextClient::from_config(config)?;
     let api_tools = registry.to_api_tools();
 
     let mut messages = vec![Message {
@@ -1926,7 +1934,7 @@ async fn run_exec_agent(config: &Config, model: &str, prompt: &str) -> Result<()
         }],
     }];
 
-    // Agent loop: send → execute tools → send results → repeat
+    // Agent loop: send ? execute tools ? send results ? repeat
     for _step in 0..25 {
         let request = MessageRequest {
             model: model.to_string(),
@@ -1954,7 +1962,7 @@ async fn run_exec_agent(config: &Config, model: &str, prompt: &str) -> Result<()
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     has_tool_use = true;
-                    eprintln!("⚙ {name}");
+                    eprintln!("? {name}");
                     let result = registry.execute(name, input.clone()).await;
                     let output = match result {
                         Ok(text) => text,
@@ -1989,7 +1997,7 @@ async fn run_exec_agent(config: &Config, model: &str, prompt: &str) -> Result<()
     Ok(())
 }
 
-// ─── Setup subcommand ────────────────────────────────────────────────────
+// ??? Setup subcommand ????????????????????????????????????????????????????
 
 fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -> Result<()> {
     use colored::Colorize;
@@ -2017,7 +2025,7 @@ fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -
         if mcp_path.exists() && !args.force {
             println!(
                 "  {} MCP config already exists at {}",
-                "·".truecolor(blue_r, blue_g, blue_b),
+                "?".truecolor(blue_r, blue_g, blue_b),
                 mcp_path.display()
             );
         } else {
@@ -2037,7 +2045,7 @@ fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -
             std::fs::write(&mcp_path, serde_json::to_string_pretty(&template)?)?;
             println!(
                 "  {} Created MCP config at {}",
-                "✓".truecolor(green_r, green_g, green_b),
+                "?".truecolor(green_r, green_g, green_b),
                 mcp_path.display()
             );
         }
@@ -2060,7 +2068,7 @@ fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -
         if skill_file.exists() && !args.force {
             println!(
                 "  {} Example skill already exists at {}",
-                "·".truecolor(blue_r, blue_g, blue_b),
+                "?".truecolor(blue_r, blue_g, blue_b),
                 skill_file.display()
             );
         } else {
@@ -2074,7 +2082,7 @@ fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -
             )?;
             println!(
                 "  {} Created example skill at {}",
-                "✓".truecolor(green_r, green_g, green_b),
+                "?".truecolor(green_r, green_g, green_b),
                 skill_file.display()
             );
         }
@@ -2088,7 +2096,7 @@ fn run_setup(config: &Config, workspace: &std::path::Path, args: SetupCliArgs) -
     Ok(())
 }
 
-// ─── MCP CLI subcommands ─────────────────────────────────────────────────
+// ??? MCP CLI subcommands ?????????????????????????????????????????????????
 
 fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
     use colored::Colorize;
@@ -2105,7 +2113,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
             if mcp_path.exists() && !force {
                 println!(
                     "{} MCP config already exists at {}",
-                    "·".truecolor(muted_r, muted_g, muted_b),
+                    "?".truecolor(muted_r, muted_g, muted_b),
                     mcp_path.display()
                 );
                 println!("Use --force to overwrite.");
@@ -2126,7 +2134,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                 std::fs::write(&mcp_path, serde_json::to_string_pretty(&template)?)?;
                 println!(
                     "{} Created MCP config at {}",
-                    "✓".truecolor(green_r, green_g, green_b),
+                    "?".truecolor(green_r, green_g, green_b),
                     mcp_path.display()
                 );
             }
@@ -2147,7 +2155,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                             } else {
                                 "enabled".truecolor(green_r, green_g, green_b)
                             };
-                            println!("  • {} ({})", name, status);
+                            println!("  ? {} ({})", name, status);
                             println!("    Command: {} {}", server.command, server.args.join(" "));
                         }
                     }
@@ -2155,7 +2163,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                 Err(e) => {
                     println!(
                         "  {} Failed to load MCP config: {}",
-                        "✗".truecolor(red_r, red_g, red_b),
+                        "?".truecolor(red_r, red_g, red_b),
                         e
                     );
                     if !mcp_path.exists() {
@@ -2175,7 +2183,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                     if connected.is_empty() {
                         println!(
                             "  {} No servers connected",
-                            "✗".truecolor(red_r, red_g, red_b)
+                            "?".truecolor(red_r, red_g, red_b)
                         );
                     } else {
                         for name in connected {
@@ -2184,14 +2192,14 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                             }
                             println!(
                                 "  {} {} connected",
-                                "✓".truecolor(green_r, green_g, green_b),
+                                "?".truecolor(green_r, green_g, green_b),
                                 name
                             );
                         }
                     }
                 }
                 Err(e) => {
-                    println!("  {} Failed: {}", "✗".truecolor(red_r, red_g, red_b), e);
+                    println!("  {} Failed: {}", "?".truecolor(red_r, red_g, red_b), e);
                 }
             }
         }
@@ -2211,7 +2219,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                                 continue;
                             }
                             println!(
-                                "  {} — {}",
+                                "  {} ? {}",
                                 tool.name,
                                 tool.description.as_deref().unwrap_or("")
                             );
@@ -2219,7 +2227,7 @@ fn run_mcp_command(config: &Config, cmd: McpCliCommand) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    println!("  {} Failed: {}", "✗".truecolor(red_r, red_g, red_b), e);
+                    println!("  {} Failed: {}", "?".truecolor(red_r, red_g, red_b), e);
                 }
             }
         }

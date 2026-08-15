@@ -13,8 +13,63 @@ use crate::hooks::HooksConfig;
 
 /// Built-in fallback text model used when config/env does not provide one.
 pub const DEFAULT_TEXT_MODEL: &str = "MiniMax-M2.5";
+/// Default provider name when none is configured.
+pub const DEFAULT_PROVIDER_NAME: &str = "minimax";
 /// Maximum supported concurrent subagents.
 pub const MAX_SUBAGENTS: usize = 5;
+
+/// Chat API protocol used by a configured LLM provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderApi {
+    #[default]
+    Anthropic,
+    #[serde(alias = "openai-compat", alias = "openai_compatible")]
+    OpenAi,
+}
+
+impl ProviderApi {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+        }
+    }
+}
+
+/// One named LLM provider from config (`[providers.<name>]`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProviderEntry {
+    pub api: Option<ProviderApi>,
+    pub url: Option<String>,
+    pub api_key: Option<String>,
+    pub default_model: Option<String>,
+}
+
+/// Resolved active provider used to construct the text client.
+#[derive(Debug, Clone)]
+pub struct ActiveProvider {
+    pub name: String,
+    pub api: ProviderApi,
+    pub url: String,
+    pub api_key: String,
+    pub default_model: String,
+}
+
+impl ActiveProvider {
+    /// Messages endpoint for Anthropic-compatible APIs.
+    #[must_use]
+    pub fn anthropic_messages_url(&self) -> String {
+        anthropic_messages_url(&self.url)
+    }
+
+    /// Chat completions endpoint for OpenAI-compatible APIs.
+    #[must_use]
+    pub fn openai_chat_completions_url(&self) -> String {
+        openai_chat_completions_url(&self.url)
+    }
+}
 
 // === Types ===
 
@@ -94,6 +149,11 @@ pub struct Config {
     pub default_video_model: Option<String>,
     pub default_audio_model: Option<String>,
     pub default_music_model: Option<String>,
+
+    /// Active LLM provider name (key under `[providers]`).
+    pub provider: Option<String>,
+    /// Named LLM providers (`name` / `url` / `api_key` / `api`).
+    pub providers: Option<HashMap<String, ProviderEntry>>,
 
     // === Coding API Configuration ===
     /// Second API key for MiniMax Coding API (optional, falls back to primary)
@@ -176,6 +236,40 @@ impl Config {
         {
             anyhow::bail!("api_key cannot be empty string");
         }
+        // If a non-default provider is selected, it must exist.
+        if let Some(name) = self
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let names = self.provider_names();
+            let known = names.iter().any(|n| n == name)
+                || (name == DEFAULT_PROVIDER_NAME && self.providers.is_none());
+            if !known {
+                anyhow::bail!(
+                    "Unknown provider '{name}'. Available providers: {}",
+                    names.join(", ")
+                );
+            }
+            // If the provider entry exists, ensure required fields when a key is expected.
+            if let Some(entry) = self.providers.as_ref().and_then(|m| m.get(name))
+                && let Err(err) = resolve_provider_entry(name, entry, self)
+            {
+                // Allow missing api_key during onboarding (no key anywhere yet).
+                let has_any_key = self
+                    .api_key
+                    .as_ref()
+                    .is_some_and(|k| !k.trim().is_empty())
+                    || self.providers.as_ref().is_some_and(|m| {
+                        m.values()
+                            .any(|e| e.api_key.as_ref().is_some_and(|k| !k.trim().is_empty()))
+                    });
+                if has_any_key {
+                    return Err(err);
+                }
+            }
+        }
         if let Some(features) = &self.features {
             for key in features.entries.keys() {
                 if !is_known_feature_key(key) {
@@ -184,6 +278,83 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// List configured provider names (includes implicit `minimax` when using legacy config).
+    #[must_use]
+    pub fn provider_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .providers
+            .as_ref()
+            .map(|map| map.keys().cloned().collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            names.push(DEFAULT_PROVIDER_NAME.to_string());
+        } else if self.api_key.is_some() && !names.iter().any(|n| n == DEFAULT_PROVIDER_NAME) {
+            // Legacy top-level key still usable as minimax when not shadowed.
+            names.push(DEFAULT_PROVIDER_NAME.to_string());
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Active provider name (config / env), defaulting to `minimax`.
+    #[must_use]
+    pub fn active_provider_name(&self) -> String {
+        self.provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_PROVIDER_NAME)
+            .to_string()
+    }
+
+    /// Resolve the active LLM provider (name, API, URL, key, default model).
+    pub fn active_provider(&self) -> Result<ActiveProvider> {
+        let name = self.active_provider_name();
+        if let Some(entry) = self.providers.as_ref().and_then(|m| m.get(&name)) {
+            return resolve_provider_entry(&name, entry, self);
+        }
+
+        // Implicit / legacy MiniMax provider when `[providers]` is absent or name is minimax.
+        if name == DEFAULT_PROVIDER_NAME {
+            let api_key = self
+                .api_key
+                .clone()
+                .filter(|k| !k.trim().is_empty())
+                .context(
+                    "Failed to load API key: set api_key / MINIMAX_API_KEY or configure [providers.minimax].",
+                )?;
+            let url = self
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.minimax.io".to_string());
+            let default_model = self
+                .default_text_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+            return Ok(ActiveProvider {
+                name,
+                api: ProviderApi::Anthropic,
+                url: normalize_base_url(&url),
+                api_key,
+                default_model,
+            });
+        }
+
+        let available = self.provider_names().join(", ");
+        anyhow::bail!("Unknown provider '{name}'. Available providers: {available}")
+    }
+
+    /// Select an active provider by name (mutates `provider` field).
+    pub fn set_active_provider(&mut self, name: &str) -> Result<ActiveProvider> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Provider name cannot be empty");
+        }
+        self.provider = Some(trimmed.to_string());
+        self.active_provider()
     }
 
     /// Return the `MiniMax` base URL (normalized).
@@ -199,8 +370,19 @@ impl Config {
     /// Return the MiniMax text API base URL (normalized).
     ///
     /// MiniMax text chat currently uses the `/anthropic` compatibility route.
+    #[allow(dead_code)]
     #[must_use]
     pub fn minimax_text_base_url(&self) -> String {
+        // Prefer active anthropic provider URL when it is MiniMax.
+        if let Ok(active) = self.active_provider()
+            && active.api == ProviderApi::Anthropic
+        {
+            let root = normalize_base_url(&active.url);
+            if is_minimax_host(&root) {
+                return format!("{}/anthropic", root.trim_end_matches('/'));
+            }
+            return root;
+        }
         let root = normalize_base_url(
             &self
                 .base_url
@@ -282,8 +464,22 @@ impl Config {
             )
     }
 
+    #[allow(dead_code)]
     pub fn minimax_text_api_key(&self) -> Result<String> {
+        if let Ok(active) = self.active_provider() {
+            return Ok(active.api_key);
+        }
         self.minimax_api_key()
+    }
+
+    /// Default text model for the active provider (falls back to legacy / built-in).
+    #[must_use]
+    pub fn resolved_default_text_model(&self) -> String {
+        self.active_provider()
+            .map(|p| p.default_model)
+            .ok()
+            .or_else(|| self.default_text_model.clone())
+            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string())
     }
 
     /// Return whether auto-compaction should be enabled from config (if explicitly set).
@@ -625,6 +821,12 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("MINIMAX_BASE_URL_2") {
         config.base_url_2 = Some(value);
     }
+    if let Ok(value) = std::env::var("MINIMAX_PROVIDER") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            config.provider = Some(trimmed.to_string());
+        }
+    }
     if let Ok(value) = std::env::var("MINIMAX_DEFAULT_CODING_MODEL") {
         config.default_coding_model = Some(value);
     }
@@ -702,17 +904,139 @@ fn apply_env_overrides(config: &mut Config) {
 
 fn normalize_base_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
-    let minimax_domains = ["api.minimax.io", "api.minimaxi.com"];
-    if minimax_domains
-        .iter()
-        .any(|domain| trimmed.contains(domain))
-    {
+    if is_minimax_host(trimmed) {
         return trimmed
             .trim_end_matches("/anthropic")
             .trim_end_matches("/v1")
             .to_string();
     }
     trimmed.to_string()
+}
+
+fn is_minimax_host(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    lower.contains("api.minimax.io") || lower.contains("api.minimaxi.com")
+}
+
+/// Build Anthropic Messages URL from a provider base URL.
+#[must_use]
+pub fn anthropic_messages_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let lower = trimmed.to_lowercase();
+    if lower.ends_with("/v1/messages") {
+        return trimmed.to_string();
+    }
+    if lower.contains("/anthropic") {
+        if lower.ends_with("/v1") {
+            return format!("{trimmed}/messages");
+        }
+        return format!("{trimmed}/v1/messages");
+    }
+    if is_minimax_host(trimmed) {
+        let root = normalize_base_url(trimmed);
+        return format!("{}/anthropic/v1/messages", root.trim_end_matches('/'));
+    }
+    if lower.ends_with("/v1") {
+        return format!("{trimmed}/messages");
+    }
+    format!("{trimmed}/v1/messages")
+}
+
+/// Build OpenAI Chat Completions URL from a provider base URL.
+#[must_use]
+pub fn openai_chat_completions_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let lower = trimmed.to_lowercase();
+    if lower.ends_with("/chat/completions") {
+        return trimmed.to_string();
+    }
+    if lower.ends_with("/v1") {
+        return format!("{trimmed}/chat/completions");
+    }
+    format!("{trimmed}/v1/chat/completions")
+}
+
+fn resolve_provider_entry(
+    name: &str,
+    entry: &ProviderEntry,
+    config: &Config,
+) -> Result<ActiveProvider> {
+    let api = entry.api.unwrap_or(if name == DEFAULT_PROVIDER_NAME {
+        ProviderApi::Anthropic
+    } else {
+        // Non-minimax providers default to openai-compatible unless specified.
+        ProviderApi::OpenAi
+    });
+
+    let api_key = entry
+        .api_key
+        .clone()
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| {
+            if name == DEFAULT_PROVIDER_NAME {
+                config.api_key.clone().filter(|k| !k.trim().is_empty())
+            } else {
+                None
+            }
+        })
+        .with_context(|| {
+            format!("Provider '{name}' is missing api_key. Set it under [providers.{name}].")
+        })?;
+
+    let url = entry
+        .url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .or_else(|| {
+            if name == DEFAULT_PROVIDER_NAME {
+                config.base_url.clone()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if name == DEFAULT_PROVIDER_NAME {
+                "https://api.minimax.io".to_string()
+            } else {
+                String::new()
+            }
+        });
+    if url.trim().is_empty() {
+        anyhow::bail!("Provider '{name}' is missing url. Set it under [providers.{name}].");
+    }
+
+    let default_model = entry
+        .default_model
+        .clone()
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| {
+            if name == DEFAULT_PROVIDER_NAME {
+                config.default_text_model.clone()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if name == DEFAULT_PROVIDER_NAME {
+                DEFAULT_TEXT_MODEL.to_string()
+            } else {
+                "gpt-4o".to_string()
+            }
+        });
+
+    let url = if api == ProviderApi::Anthropic && is_minimax_host(&url) {
+        normalize_base_url(&url)
+    } else {
+        url.trim().trim_end_matches('/').to_string()
+    };
+
+    Ok(ActiveProvider {
+        name: name.to_string(),
+        api,
+        url,
+        api_key,
+        default_model,
+    })
 }
 
 fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
@@ -745,6 +1069,18 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 }
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
+    let providers = match (base.providers, override_cfg.providers) {
+        (Some(mut base_map), Some(over_map)) => {
+            for (k, v) in over_map {
+                base_map.insert(k, v);
+            }
+            Some(base_map)
+        }
+        (None, Some(over_map)) => Some(over_map),
+        (Some(base_map), None) => Some(base_map),
+        (None, None) => None,
+    };
+
     Config {
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
@@ -761,6 +1097,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         default_music_model: override_cfg
             .default_music_model
             .or(base.default_music_model),
+
+        provider: override_cfg.provider.or(base.provider),
+        providers,
 
         // Coding API configuration
         api_key_2: override_cfg.api_key_2.or(base.api_key_2),
@@ -857,7 +1196,11 @@ default_text_model = "MiniMax-M2.5"
 
 /// Check if an API key is configured (either in config or environment)
 pub fn has_api_key(config: &Config) -> bool {
-    config.api_key.is_some()
+    config.active_provider().is_ok()
+        || config
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty())
 }
 
 /// Clear the API key from the config file
@@ -1102,5 +1445,81 @@ mod tests {
         let config = Config::default();
         config.validate()?;
         Ok(())
+    }
+
+    #[test]
+    fn test_implicit_minimax_provider() {
+        let config = Config {
+            api_key: Some("sk-test".into()),
+            base_url: Some("https://api.minimax.io".into()),
+            default_text_model: Some("MiniMax-M3".into()),
+            ..Default::default()
+        };
+        let active = config.active_provider().unwrap();
+        assert_eq!(active.name, "minimax");
+        assert_eq!(active.api, ProviderApi::Anthropic);
+        assert_eq!(active.default_model, "MiniMax-M3");
+        assert_eq!(
+            active.anthropic_messages_url(),
+            "https://api.minimax.io/anthropic/v1/messages"
+        );
+    }
+
+    #[test]
+    fn test_named_openai_provider() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai".to_string(),
+            ProviderEntry {
+                api: Some(ProviderApi::OpenAi),
+                url: Some("https://api.openai.com/v1".into()),
+                api_key: Some("sk-oai".into()),
+                default_model: Some("gpt-4.1".into()),
+            },
+        );
+        let config = Config {
+            provider: Some("openai".into()),
+            providers: Some(providers),
+            api_key: Some("sk-mini".into()),
+            ..Default::default()
+        };
+        let active = config.active_provider().unwrap();
+        assert_eq!(active.name, "openai");
+        assert_eq!(active.api, ProviderApi::OpenAi);
+        assert_eq!(
+            active.openai_chat_completions_url(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_unknown_provider_errors() {
+        let config = Config {
+            provider: Some("nope".into()),
+            api_key: Some("sk".into()),
+            ..Default::default()
+        };
+        let err = config.active_provider().unwrap_err().to_string();
+        assert!(err.contains("Unknown provider 'nope'"));
+    }
+
+    #[test]
+    fn test_anthropic_and_openai_url_helpers() {
+        assert_eq!(
+            anthropic_messages_url("https://api.minimax.io"),
+            "https://api.minimax.io/anthropic/v1/messages"
+        );
+        assert_eq!(
+            anthropic_messages_url("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://proxy.example.com"),
+            "https://proxy.example.com/v1/chat/completions"
+        );
     }
 }

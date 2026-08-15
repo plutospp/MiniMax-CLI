@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
 
-use crate::client::MiniMaxTextClient;
+use crate::client::TextClient;
 use crate::core::events::Event;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::plan::{PlanState, SharedPlanState};
@@ -143,7 +143,7 @@ pub struct SubAgentResult {
 /// Runtime configuration for spawning sub-agents.
 #[derive(Clone)]
 pub struct SubAgentRuntime {
-    pub client: MiniMaxTextClient,
+    pub client: TextClient,
     pub model: String,
     pub context: ToolContext,
     pub allow_shell: bool,
@@ -154,7 +154,7 @@ impl SubAgentRuntime {
     /// Create a runtime configuration for sub-agent execution.
     #[must_use]
     pub fn new(
-        client: MiniMaxTextClient,
+        client: TextClient,
         model: String,
         context: ToolContext,
         allow_shell: bool,

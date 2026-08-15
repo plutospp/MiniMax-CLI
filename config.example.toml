@@ -7,22 +7,37 @@
 # See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# API Keys
+# API Keys / legacy MiniMax defaults
 # ─────────────────────────────────────────────────────────────────────────────────
-api_key = "YOUR_MINIMAX_API_KEY" # must be non-empty
-# anthropic_api_key = "YOUR_ANTHROPIC_COMPAT_API_KEY"  # Not yet supported
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# Base URLs
-# ─────────────────────────────────────────────────────────────────────────────────
+api_key = "YOUR_MINIMAX_API_KEY" # must be non-empty (used when [providers] is absent)
 base_url = "https://api.minimax.io" # US/global endpoint (default)
 # base_url = "https://api.minimaxi.com"         # China endpoint
-# anthropic_base_url = "https://api.minimax.io/anthropic"  # Computed from base_url
+default_text_model = "MiniMax-M2.5"
+
+# Active LLM provider (key under [providers]). Defaults to "minimax".
+provider = "minimax"
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Default Models
+# Named LLM providers (optional)
+# Each entry needs: api ("anthropic" | "openai"), url, api_key, optional default_model
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "MiniMax-M2.5"
+# [providers.minimax]
+# api = "anthropic"
+# url = "https://api.minimax.io"
+# api_key = "YOUR_MINIMAX_API_KEY"
+# default_model = "MiniMax-M3"
+#
+# [providers.openai]
+# api = "openai"
+# url = "https://api.openai.com/v1"
+# api_key = "YOUR_OPENAI_API_KEY"
+# default_model = "gpt-4.1"
+#
+# [providers.proxy]
+# api = "openai"          # or "anthropic"
+# url = "https://example.com/v1"
+# api_key = "YOUR_PROXY_KEY"
+# default_model = "my-model"
 
 # Parsed but currently unused (reserved for future versions):
 # default_image_model = "image-01"

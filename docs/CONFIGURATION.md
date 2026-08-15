@@ -35,12 +35,55 @@ Select a profile with:
 
 If a profile is selected but missing, MiniMax CLI exits with an error listing available profiles.
 
+## LLM Providers
+
+You can define multiple chat backends and switch between them.
+
+```toml
+provider = "minimax"
+
+[providers.minimax]
+api = "anthropic"
+url = "https://api.minimax.io"
+api_key = "YOUR_MINIMAX_KEY"
+default_model = "MiniMax-M3"
+
+[providers.openai]
+api = "openai"
+url = "https://api.openai.com/v1"
+api_key = "YOUR_OPENAI_KEY"
+default_model = "gpt-4.1"
+```
+
+- `provider` (string): active provider name (default `minimax`).
+- `[providers.<name>].api`: `anthropic` or `openai` (aliases: `openai-compat`).
+- `[providers.<name>].url`: API base URL.
+- `[providers.<name>].api_key`: credential for that provider.
+- `[providers.<name>].default_model`: model used when switching to the provider.
+
+**Backward compatible:** if `[providers]` is omitted, top-level `api_key` + `base_url` + `default_text_model` form an implicit `minimax` Anthropic provider.
+
+**URL rules:**
+
+- `anthropic`: POST `{url}/v1/messages`. MiniMax hosts without `/anthropic` use `{url}/anthropic/v1/messages`.
+- `openai`: POST `{url}/chat/completions` when `url` ends with `/v1`, otherwise `{url}/v1/chat/completions`.
+
+Select the active provider with:
+
+- Config: `provider = "openai"`
+- CLI: `minimax --provider openai`
+- Env: `MINIMAX_PROVIDER=openai`
+- TUI: `/provider` or `/provider openai`
+
+Image/video/TTS and the Coding API remain MiniMax-only (still use top-level `api_key` / `base_url` / `api_key_2`).
+
 ## Environment Variables
 
 These override config values:
 
 - `MINIMAX_API_KEY`
 - `MINIMAX_BASE_URL`
+- `MINIMAX_PROVIDER`
 - `MINIMAX_OUTPUT_DIR`
 - `MINIMAX_SKILLS_DIR`
 - `MINIMAX_MCP_CONFIG`
@@ -59,9 +102,11 @@ These override config values:
 
 ### Core keys (used by the TUI/engine)
 
-- `api_key` (string, required): must be non-empty (or set `MINIMAX_API_KEY`).
-- `base_url` (string, optional): defaults to `https://api.minimax.io` (the CLI derives the text endpoint as `<base_url>/anthropic`).
-- `default_text_model` (string, optional): defaults to `MiniMax-M2.5`.
+- `api_key` (string, required for legacy/implicit MiniMax): must be non-empty (or set `MINIMAX_API_KEY`), unless provided under `[providers.*]`.
+- `base_url` (string, optional): defaults to `https://api.minimax.io` (the CLI derives the text endpoint as `<base_url>/anthropic` for MiniMax).
+- `provider` (string, optional): active `[providers]` entry name; defaults to `minimax`.
+- `providers` (table, optional): named LLM backends (`api`, `url`, `api_key`, `default_model`).
+- `default_text_model` (string, optional): defaults to `MiniMax-M2.5` for the legacy MiniMax provider.
 - `allow_shell` (bool, optional): defaults to `false`.
 - `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=5`.
 - `skills_dir` (string, optional): defaults to `~/.minimax/skills` (each skill is a directory containing `SKILL.md`).

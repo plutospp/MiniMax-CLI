@@ -19,6 +19,7 @@ use super::Renderable;
 pub struct HeaderData<'a> {
     pub mode: AppMode,
     pub model: &'a str,
+    pub provider: Option<&'a str>,
     pub context_used: u32,
     pub context_max: Option<u32>,
     pub is_streaming: bool,
@@ -41,6 +42,7 @@ impl<'a> HeaderData<'a> {
         Self {
             mode,
             model,
+            provider: None,
             context_used,
             context_max,
             is_streaming,
@@ -48,6 +50,12 @@ impl<'a> HeaderData<'a> {
             shell_mode: false,
             pins: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_provider(mut self, provider: &'a str) -> Self {
+        self.provider = Some(provider);
+        self
     }
 
     /// Set shell mode status.
@@ -130,10 +138,15 @@ impl<'a> HeaderWidget<'a> {
 
     /// Build the model name span.
     fn model_span(&self) -> Span<'static> {
-        let display_name = if self.data.model.len() > 20 {
-            format!("{}...", &self.data.model[..17])
+        let label = if let Some(provider) = self.data.provider {
+            format!("{provider}/{}", self.data.model)
         } else {
             self.data.model.to_string()
+        };
+        let display_name = if label.len() > 28 {
+            format!("{}...", &label[..25])
+        } else {
+            label
         };
 
         Span::styled(display_name, Style::default().fg(palette::TEXT_MUTED))
@@ -324,6 +337,7 @@ mod tests {
         let data = HeaderData {
             mode: AppMode::Normal,
             model: "minimax-m2.1",
+            provider: None,
             context_used: 64_000,
             context_max: Some(128_000),
             is_streaming: false,
@@ -340,6 +354,7 @@ mod tests {
         let data = HeaderData {
             mode: AppMode::Normal,
             model: "minimax-m2.1",
+            provider: None,
             context_used: 0,
             context_max: Some(128_000),
             is_streaming: false,
@@ -356,6 +371,7 @@ mod tests {
         let data = HeaderData {
             mode: AppMode::Normal,
             model: "unknown-model",
+            provider: None,
             context_used: 1000,
             context_max: None,
             is_streaming: false,

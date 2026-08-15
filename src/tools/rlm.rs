@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::client::MiniMaxTextClient;
+use crate::client::TextClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool, Usage};
 use crate::rlm::{
     RlmContext, SharedRlmSession, context_id_from_path, eval_expr_mut, session_summary,
@@ -280,7 +280,7 @@ impl ToolSpec for RlmStatusTool {
 /// Supports recursive sub-calls per the RLM paper with depth limiting.
 pub struct RlmQueryTool {
     session: SharedRlmSession,
-    client: Option<MiniMaxTextClient>,
+    client: Option<TextClient>,
     model: String,
     current_depth: u32,
 }
@@ -289,7 +289,7 @@ impl RlmQueryTool {
     #[must_use]
     pub fn new(
         session: SharedRlmSession,
-        client: Option<MiniMaxTextClient>,
+        client: Option<TextClient>,
         model: String,
     ) -> Self {
         Self {

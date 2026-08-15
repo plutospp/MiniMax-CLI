@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::client::MiniMaxTextClient;
+use crate::client::TextClient;
 use crate::duo::SharedDuoSession;
 use crate::models::Tool;
 use crate::rlm::SharedRlmSession;
@@ -452,7 +452,7 @@ impl ToolRegistryBuilder {
     pub fn with_rlm_tools(
         self,
         session: SharedRlmSession,
-        client: Option<MiniMaxTextClient>,
+        client: Option<TextClient>,
         model: String,
     ) -> Self {
         self.with_tool(Arc::new(super::rlm::RlmExecTool::new(session.clone())))

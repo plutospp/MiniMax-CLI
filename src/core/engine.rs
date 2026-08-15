@@ -20,7 +20,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::client::MiniMaxTextClient;
+use crate::client::TextClient;
 use crate::compaction::{CompactionConfig, compact_messages, maybe_compact, merge_system_prompts};
 use crate::config::Config;
 use crate::duo::{DuoSession, SharedDuoSession, session_summary as duo_session_summary};
@@ -183,7 +183,7 @@ impl EngineHandle {
 /// The core engine that processes operations and emits events
 pub struct Engine {
     config: EngineConfig,
-    minimax_text_client: Option<MiniMaxTextClient>,
+    minimax_text_client: Option<TextClient>,
     minimax_text_client_error: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
@@ -368,7 +368,7 @@ impl Engine {
 
         // Create clients for both providers
         let (minimax_text_client, minimax_text_client_error) =
-            match MiniMaxTextClient::new(api_config) {
+            match TextClient::from_config(api_config) {
                 Ok(client) => (Some(client), None),
                 Err(err) => (None, Some(err.to_string())),
             };
@@ -713,6 +713,22 @@ impl Engine {
                         .tx_event
                         .send(Event::status(format!(
                             "Model set to: {}",
+                            self.session.model
+                        )))
+                        .await;
+                }
+                Op::ReloadTextClient { client, model } => {
+                    let name = client.provider_name().to_string();
+                    self.minimax_text_client = Some(client);
+                    self.minimax_text_client_error = None;
+                    if let Some(model) = model {
+                        self.session.model = model;
+                        self.config.model.clone_from(&self.session.model);
+                    }
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Provider switched to: {name} (model: {})",
                             self.session.model
                         )))
                         .await;

@@ -178,17 +178,21 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         }
     }
 
+    // Align API config with the provider selected in settings / CLI.
+    let mut api_config = config.clone();
+    api_config.provider = Some(app.provider.clone());
+
     // Create the Engine with configuration from TuiOptions
     let engine_config = EngineConfig {
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         allow_shell: app.allow_shell,
         trust_mode: options.yolo,
-        notes_path: config.notes_path(),
-        mcp_config_path: config.mcp_config_path(),
+        notes_path: api_config.notes_path(),
+        mcp_config_path: api_config.mcp_config_path(),
         max_steps: 100,
         max_subagents: app.max_subagents,
-        features: config.features(),
+        features: api_config.features(),
         todo_list: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         rlm_session: app.rlm_session.clone(),
@@ -197,11 +201,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         cache_system: true,
         cache_tools: true,
         auto_compact: app.auto_compact,
-        compaction: config.compaction_config_for_model(&app.model),
+        compaction: api_config.compaction_config_for_model(&app.model),
     };
 
     // Spawn the Engine - it will handle all API communication
-    let engine_handle = spawn_engine(engine_config, config);
+    let engine_handle = spawn_engine(engine_config, &api_config);
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -293,7 +297,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    _config: &Config,
+    config: &Config,
     engine_handle: EngineHandle,
     event_broker: &EventBroker,
     task_manager: Option<SharedTaskManager>,
@@ -592,7 +596,7 @@ async fn run_event_loop(
 
         if !app.view_stack.is_empty() {
             let events = app.view_stack.tick();
-            handle_view_events(app, &engine_handle, events).await;
+            handle_view_events(app, &engine_handle, config, events).await;
         }
 
         if event_broker.is_paused() {
@@ -793,7 +797,7 @@ async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
-                handle_view_events(app, &engine_handle, events).await;
+                handle_view_events(app, &engine_handle, config, events).await;
                 continue;
             }
 
@@ -1144,6 +1148,38 @@ async fn run_event_loop(
                                                 app.model.clone(),
                                             ),
                                         );
+                                    }
+                                    AppAction::OpenProviderPicker => {
+                                        let items = provider_picker_items(config);
+                                        app.view_stack.push(
+                                            crate::tui::provider_picker::ProviderPicker::new(
+                                                app.provider.clone(),
+                                                items,
+                                            ),
+                                        );
+                                    }
+                                    AppAction::SwitchProvider { name } => {
+                                        match switch_provider(
+                                            app,
+                                            &engine_handle,
+                                            config,
+                                            &name,
+                                        )
+                                        .await
+                                        {
+                                            Ok(msg) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: msg,
+                                                });
+                                            }
+                                            Err(err) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!(
+                                                        "Failed to switch provider: {err}"
+                                                    ),
+                                                });
+                                            }
+                                        }
                                     }
                                     AppAction::OpenHistoryPicker => {
                                         app.view_stack.push(
@@ -2261,6 +2297,7 @@ fn render(f: &mut Frame, app: &mut App) {
             app.is_loading,
             app.ui_theme.header_bg,
         )
+        .with_provider(&app.provider)
         .with_shell_mode(app.shell_mode)
         .with_pins(app.list_pins());
         let header_widget = HeaderWidget::new(header_data);
@@ -2337,7 +2374,12 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
-async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events: Vec<ViewEvent>) {
+async fn handle_view_events(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    config: &Config,
+    events: Vec<ViewEvent>,
+) {
     for event in events {
         match event {
             ViewEvent::ApprovalDecision {
@@ -2462,6 +2504,21 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                     crate::tui::model_picker::ModelPickerResult::Cancelled => {}
                 }
             }
+            ViewEvent::ProviderPickerResult { result } => match result {
+                crate::tui::provider_picker::ProviderPickerResult::Selected(name) => {
+                    match switch_provider(app, &engine_handle, config, &name).await {
+                        Ok(msg) => {
+                            app.add_message(HistoryCell::System { content: msg });
+                        }
+                        Err(err) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Failed to switch provider: {err}"),
+                            });
+                        }
+                    }
+                }
+                crate::tui::provider_picker::ProviderPickerResult::Cancelled => {}
+            },
             ViewEvent::SearchResultSelected { result } => {
                 // Scroll to the selected search result
                 app.transcript_scroll = super::scrolling::TranscriptScroll::Scrolled {
@@ -2482,6 +2539,72 @@ fn pause_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
         DisableBracketedPaste
     )?;
     Ok(())
+}
+
+fn provider_picker_items(config: &Config) -> Vec<crate::tui::provider_picker::ProviderPickItem> {
+    let names = config.provider_names();
+    let mut items = Vec::new();
+    for name in names {
+        let mut cfg = config.clone();
+        cfg.provider = Some(name.clone());
+        match cfg.active_provider() {
+            Ok(active) => items.push(crate::tui::provider_picker::ProviderPickItem {
+                name: active.name,
+                api: active.api.as_str().to_string(),
+                url: active.url,
+                default_model: active.default_model,
+            }),
+            Err(_) => items.push(crate::tui::provider_picker::ProviderPickItem {
+                name,
+                api: "?".into(),
+                url: String::new(),
+                default_model: String::new(),
+            }),
+        }
+    }
+    items
+}
+
+async fn switch_provider(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    base_config: &Config,
+    name: &str,
+) -> Result<String> {
+    let mut cfg = base_config.clone();
+    let active = cfg.set_active_provider(name)?;
+    let client = crate::client::TextClient::from_provider(&active, cfg.retry_policy())?;
+    let old_provider = app.provider.clone();
+    let old_model = app.model.clone();
+    app.provider = active.name.clone();
+    app.model = active.default_model.clone();
+
+    let mut settings = crate::settings::Settings::load().unwrap_or_default();
+    settings.default_provider = Some(active.name.clone());
+    settings.default_model = Some(app.model.clone());
+    let _ = settings.save();
+
+    engine_handle
+        .send(Op::ReloadTextClient {
+            client,
+            model: Some(app.model.clone()),
+        })
+        .await?;
+    engine_handle
+        .send(Op::SyncSession {
+            messages: app.api_messages.clone(),
+            system_prompt: app.system_prompt.clone(),
+            model: app.model.clone(),
+            workspace: app.workspace.clone(),
+        })
+        .await?;
+
+    Ok(format!(
+        "Provider: {old_provider} → {} | Model: {old_model} → {} | API: {}",
+        active.name,
+        app.model,
+        active.api.as_str()
+    ))
 }
 
 fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
