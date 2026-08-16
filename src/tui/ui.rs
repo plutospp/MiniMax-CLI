@@ -202,6 +202,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         cache_tools: true,
         auto_compact: app.auto_compact,
         compaction: api_config.compaction_config_for_model(&app.model),
+        coach_model: app.coach_model.clone(),
+        duo_coach_temperature: api_config.duo_coach_temperature(),
+        duo_default_max_tokens: api_config.duo_default_max_tokens(),
     };
 
     // Spawn the Engine - it will handle all API communication
@@ -1208,13 +1211,8 @@ async fn run_event_loop(
                                         );
                                     }
                                     AppAction::SwitchProvider { name } => {
-                                        match switch_provider(
-                                            app,
-                                            &engine_handle,
-                                            config,
-                                            &name,
-                                        )
-                                        .await
+                                        match switch_provider(app, &engine_handle, config, &name)
+                                            .await
                                         {
                                             Ok(msg) => {
                                                 app.add_message(HistoryCell::System {
@@ -1229,6 +1227,44 @@ async fn run_event_loop(
                                                 });
                                             }
                                         }
+                                    }
+                                    AppAction::RequestLogin { provider } => {
+                                        app.view_stack.push(
+                                            crate::tui::secret_input::SecretInputView::new(
+                                                provider,
+                                            ),
+                                        );
+                                    }
+                                    AppAction::SetCoachModel { model } => {
+                                        let old = app
+                                            .coach_model
+                                            .clone()
+                                            .unwrap_or_else(|| app.model.clone());
+                                        app.coach_model.clone_from(&model);
+
+                                        // Persist to settings
+                                        let mut settings =
+                                            crate::settings::Settings::load().unwrap_or_default();
+                                        settings.coach_model.clone_from(&model);
+                                        let save_note = if settings.save().is_ok() {
+                                            "(saved)"
+                                        } else {
+                                            "(failed to save)"
+                                        };
+
+                                        let new =
+                                            model.clone().unwrap_or_else(|| app.model.clone());
+                                        app.add_message(HistoryCell::System {
+                                            content: format!(
+                                                "Duo coach model: {old} → {new} {save_note} (player keeps the active model)"
+                                            ),
+                                        });
+
+                                        let _ = engine_handle
+                                            .send(Op::SetCoachModel {
+                                                model: model.clone(),
+                                            })
+                                            .await;
                                     }
                                     AppAction::OpenHistoryPicker => {
                                         app.view_stack.push(
@@ -2349,6 +2385,11 @@ fn render(f: &mut Frame, app: &mut App) {
         .with_provider(&app.provider)
         .with_shell_mode(app.shell_mode)
         .with_pins(app.list_pins());
+        let header_data = if let Some(coach) = app.coach_model.as_deref() {
+            header_data.with_coach_model(coach)
+        } else {
+            header_data
+        };
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);
@@ -2568,6 +2609,37 @@ async fn handle_view_events(
                 }
                 crate::tui::provider_picker::ProviderPickerResult::Cancelled => {}
             },
+            ViewEvent::SecretInputResult { result } => {
+                let crate::tui::secret_input::SecretInputResult { provider, value } = result;
+                let Some(key) = value else {
+                    app.add_message(HistoryCell::System {
+                        content: "Login cancelled.".to_string(),
+                    });
+                    continue;
+                };
+                match crate::config::save_provider_api_key(&provider, &key) {
+                    Ok(path) => {
+                        let mut content = format!(
+                            "API key for '{provider}' saved to {} ({})",
+                            path.display(),
+                            mask_key(&key)
+                        );
+                        if provider == app.provider {
+                            match reload_active_client(app, engine_handle).await {
+                                Ok(()) => content.push_str(" — client reloaded"),
+                                Err(err) => content.push_str(&format!(
+                                    " — reload failed: {err} (restart to apply)"
+                                )),
+                            }
+                        }
+                        app.add_message(HistoryCell::System { content });
+                    }
+                    Err(err) => app.add_message(HistoryCell::Error {
+                        message: format!("Failed to save API key for '{provider}': {err}"),
+                        suggestion: None,
+                    }),
+                }
+            }
             ViewEvent::SearchResultSelected { result } => {
                 // Scroll to the selected search result
                 app.transcript_scroll = super::scrolling::TranscriptScroll::Scrolled {
@@ -2656,6 +2728,37 @@ async fn switch_provider(
     ))
 }
 
+/// Reload the engine text client from the on-disk config (after a key change).
+///
+/// Keeps the current model; errors surface to the caller for a transcript note.
+async fn reload_active_client(app: &App, engine_handle: &EngineHandle) -> Result<()> {
+    let profile = std::env::var("MINIMAX_PROFILE").ok();
+    let config_path = std::env::var("MINIMAX_CONFIG_PATH")
+        .ok()
+        .map(std::path::PathBuf::from);
+    let config = crate::config::Config::load(config_path, profile.as_deref())?;
+    let active = config.active_provider()?;
+    let client = crate::client::TextClient::from_provider(&active, config.retry_policy())?;
+    engine_handle
+        .send(Op::ReloadTextClient {
+            client,
+            model: Some(app.model.clone()),
+        })
+        .await?;
+    Ok(())
+}
+
+/// Short non-revealing preview of an API key for transcript messages.
+fn mask_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
+        "••••".to_string()
+    } else {
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{prefix}…{suffix}")
+    }
+}
 fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     enable_raw_mode()?;
     execute!(

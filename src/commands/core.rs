@@ -63,7 +63,10 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     if let Some(name) = model_name {
         // Known MiniMax catalog models, or free-form for other providers.
         let (new_model, description) = if let Some(model_info) = validate_model(name) {
-            (model_info.id.to_string(), model_info.description.to_string())
+            (
+                model_info.id.to_string(),
+                model_info.description.to_string(),
+            )
         } else if app.provider != "minimax" {
             let trimmed = name.trim().to_string();
             if trimmed.is_empty() {
@@ -119,6 +122,42 @@ pub fn provider(_app: &mut App, name: Option<&str>) -> CommandResult {
     } else {
         CommandResult::action(AppAction::OpenProviderPicker)
     }
+}
+
+/// Set or view the Duo coach model.
+///
+/// - `/coach <model>` — coach runs on this model (active provider must serve it)
+/// - `/coach off` — coach runs on the active model (same as the player)
+/// - `/coach` — show the current setting
+pub fn coach(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let Some(arg) = arg else {
+        return CommandResult::message(match app.coach_model.as_deref() {
+            Some(model) => format!(
+                "Coach model: {model} (player uses the active model: {})\n\n/coach <model> to change | /coach off to reset",
+                app.model
+            ),
+            None => format!(
+                "Coach model: (active model — same as player)\nActive model: {}\n\n/coach <model> to set a separate coach model",
+                app.model
+            ),
+        });
+    };
+
+    let trimmed = arg.trim();
+    if trimmed.is_empty() {
+        return CommandResult::error("Usage: /coach [model|off]");
+    }
+
+    let model = if trimmed.eq_ignore_ascii_case("off")
+        || trimmed.eq_ignore_ascii_case("clear")
+        || trimmed.eq_ignore_ascii_case("none")
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+
+    CommandResult::action(AppAction::SetCoachModel { model })
 }
 
 /// Manage sub-agent status from the engine.
@@ -323,6 +362,39 @@ mod tests {
                 .message
                 .unwrap_or_default()
                 .contains("Usage: /subagents wait"),
+        );
+    }
+
+    #[test]
+    fn coach_sets_and_clears_model() {
+        let mut app = create_test_app();
+
+        let result = coach(&mut app, Some("verifier-model"));
+        assert!(matches!(
+            result.action,
+            Some(AppAction::SetCoachModel { ref model }) if model.as_deref() == Some("verifier-model")
+        ));
+
+        let result = coach(&mut app, Some("off"));
+        assert!(matches!(
+            result.action,
+            Some(AppAction::SetCoachModel { ref model }) if model.is_none()
+        ));
+    }
+
+    #[test]
+    fn coach_shows_current_setting() {
+        let mut app = create_test_app();
+        let result = coach(&mut app, None);
+        assert!(result.message.unwrap_or_default().contains("active model"));
+
+        app.coach_model = Some("verifier-model".to_string());
+        let result = coach(&mut app, None);
+        assert!(
+            result
+                .message
+                .unwrap_or_default()
+                .contains("verifier-model")
         );
     }
 }

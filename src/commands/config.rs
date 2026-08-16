@@ -4,7 +4,7 @@ use super::CommandResult;
 use crate::config::clear_api_key;
 use crate::palette;
 use crate::settings::Settings;
-use crate::tui::app::{App, AppMode, OnboardingState};
+use crate::tui::app::{App, AppAction, AppMode, OnboardingState};
 use crate::tui::approval::ApprovalMode;
 
 /// Display current configuration
@@ -218,6 +218,28 @@ pub fn logout(app: &mut App) -> CommandResult {
     }
 }
 
+/// Login - enter the API key for a provider via masked input
+///
+/// Without arguments, targets the active provider. The key is saved to
+/// `[providers.<name>].api_key` in the config file (top-level `api_key` for
+/// `minimax`), and the engine client is reloaded when the target is active.
+pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let provider = arg
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(app.provider.trim())
+        .to_string();
+
+    if provider.is_empty() {
+        return CommandResult::error("Usage: /login [provider]".to_string());
+    }
+
+    CommandResult::with_message_and_action(
+        format!("Enter the API key for '{provider}' (input is masked)"),
+        AppAction::RequestLogin { provider },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +294,25 @@ mod tests {
         assert!(!app.yolo);
         assert!(!app.trust_mode);
         assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    }
+    #[test]
+    fn login_targets_named_provider() {
+        let mut app = create_test_app();
+        let result = login(&mut app, Some("kimi"));
+        assert!(matches!(
+            result.action,
+            Some(AppAction::RequestLogin { ref provider }) if provider == "kimi"
+        ));
+    }
+
+    #[test]
+    fn login_defaults_to_active_provider() {
+        let mut app = create_test_app();
+        app.provider = "deepseek".to_string();
+        let result = login(&mut app, None);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::RequestLogin { ref provider }) if provider == "deepseek"
+        ));
     }
 }

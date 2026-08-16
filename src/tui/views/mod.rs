@@ -18,6 +18,7 @@ pub enum ModalKind {
     ProviderPicker,
     HistoryPicker,
     Search,
+    SecretInput,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,9 @@ pub enum ViewEvent {
     },
     SearchResultSelected {
         result: SearchResult,
+    },
+    SecretInputResult {
+        result: crate::tui::secret_input::SecretInputResult,
     },
 }
 

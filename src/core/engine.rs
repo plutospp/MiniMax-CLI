@@ -33,6 +33,7 @@ use crate::models::{
 };
 use crate::prompts;
 use crate::rlm::{RlmSession, SharedRlmSession, session_summary as rlm_session_summary};
+use crate::tools::duo::CoachExecution;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::restore_shell_state_for_workspace;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
@@ -93,6 +94,12 @@ pub struct EngineConfig {
     pub auto_compact: bool,
     /// Compaction thresholds and prompt tuning.
     pub compaction: CompactionConfig,
+    /// Duo coach model override (None = active model).
+    pub coach_model: Option<String>,
+    /// Sampling temperature for the Duo coach turn.
+    pub duo_coach_temperature: f32,
+    /// Max tokens for the Duo coach turn.
+    pub duo_default_max_tokens: u32,
 }
 
 impl Default for EngineConfig {
@@ -112,6 +119,9 @@ impl Default for EngineConfig {
             rlm_session: Arc::new(Mutex::new(RlmSession::default())),
             duo_session: Arc::new(Mutex::new(DuoSession::new())),
             memory_path: PathBuf::from("memory.json"),
+            coach_model: None,
+            duo_coach_temperature: 0.3,
+            duo_default_max_tokens: 8192,
             cache_system: true,  // Enable by default
             cache_tools: true,   // Enable by default
             auto_compact: false, // Disabled by default
@@ -717,6 +727,18 @@ impl Engine {
                         )))
                         .await;
                 }
+                Op::SetCoachModel { model } => {
+                    self.config.coach_model = model;
+                    let label = self
+                        .config
+                        .coach_model
+                        .clone()
+                        .unwrap_or_else(|| self.session.model.clone());
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!("Duo coach model set to: {label}")))
+                        .await;
+                }
                 Op::ReloadTextClient { client, model } => {
                     let name = client.provider_name().to_string();
                     self.minimax_text_client = Some(client);
@@ -1000,23 +1022,49 @@ impl Engine {
             builder = builder.with_security_tool(self.subagent_manager.clone(), rt.clone());
         }
 
-        if mode == AppMode::Rlm {
-            if self.config.features.enabled(Feature::Rlm) {
-                builder = builder.with_rlm_tools(
-                    self.config.rlm_session.clone(),
-                    self.minimax_text_client.clone(),
-                    self.session.model.clone(),
-                );
-            } else {
-                let _ = self
-                    .tx_event
-                    .send(Event::status("RLM tools are disabled by feature flags"))
-                    .await;
-            }
+        let rlm_available = self.config.features.enabled(Feature::Rlm);
+        let rlm_registered = rlm_available && matches!(mode, AppMode::Rlm | AppMode::Duo);
+        if rlm_registered {
+            builder = builder.with_rlm_tools(
+                self.config.rlm_session.clone(),
+                self.minimax_text_client.clone(),
+                self.session.model.clone(),
+            );
+        } else if mode == AppMode::Rlm {
+            let _ = self
+                .tx_event
+                .send(Event::status("RLM tools are disabled by feature flags"))
+                .await;
         }
         if mode == AppMode::Duo {
             if self.config.features.enabled(Feature::Duo) {
-                builder = builder.with_duo_tools(self.config.duo_session.clone());
+                let rlm = if rlm_registered {
+                    Some(self.config.rlm_session.clone())
+                } else {
+                    None
+                };
+                let coach = match (
+                    self.config.coach_model.clone(),
+                    self.minimax_text_client.clone(),
+                ) {
+                    (Some(model), Some(client)) => Some(CoachExecution::new(
+                        model,
+                        self.config.duo_coach_temperature,
+                        self.config.duo_default_max_tokens,
+                        client,
+                    )),
+                    (Some(model), None) => {
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Duo coach model '{model}' set but no LLM client is available; coach will run on the active model"
+                            )))
+                            .await;
+                        None
+                    }
+                    (None, _) => None,
+                };
+                builder = builder.with_duo_tools(self.config.duo_session.clone(), rlm, coach);
             } else {
                 let _ = self
                     .tx_event

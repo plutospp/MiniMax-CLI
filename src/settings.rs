@@ -33,6 +33,8 @@ pub struct Settings {
     pub default_model: Option<String>,
     /// Default LLM provider name
     pub default_provider: Option<String>,
+    /// Coach model for Duo mode (None = active model)
+    pub coach_model: Option<String>,
     /// Show tutorial on first startup
     pub show_tutorial: bool,
 }
@@ -51,6 +53,7 @@ impl Default for Settings {
             input_history_max: 1000,
             default_model: None,
             default_provider: None,
+            coach_model: None,
             show_tutorial: true,
         }
     }
@@ -165,6 +168,9 @@ impl Settings {
             "default_provider" | "provider" => {
                 self.default_provider = Some(value.to_string());
             }
+            "coach_model" | "coach" => {
+                self.coach_model = Some(value.to_string());
+            }
             "show_tutorial" | "tutorial" => {
                 self.show_tutorial = parse_bool(value)?;
             }
@@ -203,6 +209,10 @@ impl Settings {
             "  default_provider:   {}",
             self.default_provider.as_deref().unwrap_or("(default)")
         ));
+        lines.push(format!(
+            "  coach_model:        {}",
+            self.coach_model.as_deref().unwrap_or("(active model)")
+        ));
         lines.push(format!("  show_tutorial:      {}", self.show_tutorial));
         lines.push(String::new());
         lines.push(format!(
@@ -229,6 +239,7 @@ impl Settings {
             ("input_history_max", "Max input history entries to persist"),
             ("default_model", "Default model name"),
             ("default_provider", "Default LLM provider name"),
+            ("coach_model", "Duo coach model (off = active model)"),
             ("show_tutorial", "Show tutorial on startup: on/off"),
         ]
     }

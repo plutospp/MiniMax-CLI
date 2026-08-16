@@ -77,6 +77,8 @@ Select the active provider with:
 - Env: `MINIMAX_PROVIDER=openai`
 - TUI: `/provider` or `/provider openai`
 
+Set a provider's API key interactively with `/login [provider]` in the TUI (masked input, defaults to the active provider). The key is written to `[providers.<name>].api_key` — top-level `api_key` for `minimax` — and the client reloads immediately when the target is the active provider.
+
 Image/video/TTS and the Coding API remain MiniMax-only (still use top-level `api_key` / `base_url` / `api_key_2`).
 
 ## Environment Variables

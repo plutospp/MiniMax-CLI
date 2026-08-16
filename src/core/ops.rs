@@ -56,6 +56,8 @@ pub enum Op {
 
     /// Update the model being used
     SetModel { model: String },
+    /// Set the Duo coach model override (None = active model).
+    SetCoachModel { model: Option<String> },
 
     /// Sync engine session state (used for resume/load)
     SyncSession {

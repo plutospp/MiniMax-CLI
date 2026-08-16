@@ -124,6 +124,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/provider [name]",
     },
     CommandInfo {
+        name: "login",
+        aliases: &[],
+        description: "Enter API key for a provider (masked input)",
+        usage: "/login [provider]",
+    },
+    CommandInfo {
+        name: "coach",
+        aliases: &[],
+        description: "Set Duo coach model (off = active model)",
+        usage: "/coach [model|off]",
+    },
+    CommandInfo {
         name: "queue",
         aliases: &["queued"],
         description: "View or edit queued messages",
@@ -428,14 +440,15 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "repl" => rlm::repl(app),
         "compact" => session::compact(app, arg),
         "export" => session::export(app, arg),
-
         // Config commands
         "config" => config::show_config(app),
         "settings" => config::show_settings(app),
+        "coach" => core::coach(app, arg),
         "set" => config::set_config(app, arg),
         "yolo" => config::yolo(app),
         "trust" => config::trust(app),
         "logout" => config::logout(app),
+        "login" => config::login(app, arg),
         "reload" => reload::reload(app),
         "setup" => setup::setup(app),
 

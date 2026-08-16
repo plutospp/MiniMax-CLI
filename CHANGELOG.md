@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Model picker now auto-discovers models from the active provider's models API (`/v1/models`, OpenAI- and Anthropic-compatible) and falls back to the built-in MiniMax catalog when discovery fails
+- `/login [provider]` slash command — enter a provider API key via masked input; saves to `[providers.<name>].api_key` (top-level `api_key` for `minimax`), preserving config formatting, and hot-reloads the engine client when the target is the active provider
+- Assistant messages now render Markdown in the transcript (headings, bold/italic/strikethrough, inline code, links, bullet/ordered lists, blockquotes, rules) instead of showing raw syntax; fenced code blocks keep syntax highlighting
+- Markdown tables render as aligned, width-fitted columns (bold header, rule line, per-column alignment) instead of overflowing raw pipe text
+- Transcript scrollbar column is always present so mouse-wheel scrolling and scrollbar click/drag work from any position, without layout reflow at the bottom boundary
+- Duo coach verification backed by RLM: RLM tools (`rlm_load`/`rlm_exec`/`rlm_status`/`rlm_query`) are now registered in Duo mode (gated by `[features] rlm`), `duo_coach` accepts a `files` list that preloads files into the RLM context store, and the coach prompt requires per-checklist-item evidence citations against loaded contexts
+- `/coach [model|off]` slash command — run the Duo coach on a separate model while the player keeps the active model; the setting persists in settings.toml, applies live (engine op), and `duo_coach` executes the coach turn directly against the configured model (temperature/max tokens from `[duo]`) instead of returning the prompt
 
 ## [0.6.0] - 2026-01-29
 

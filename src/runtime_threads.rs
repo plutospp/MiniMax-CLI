@@ -1025,6 +1025,9 @@ impl RuntimeThreadManager {
             cache_tools: true,
             auto_compact: self.config.auto_compact_enabled().unwrap_or(false),
             compaction,
+            coach_model: None,
+            duo_coach_temperature: self.config.duo_coach_temperature(),
+            duo_default_max_tokens: self.config.duo_default_max_tokens(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

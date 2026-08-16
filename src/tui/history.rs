@@ -63,15 +63,17 @@ impl HistoryCell {
     /// Render the cell into a set of terminal lines.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { content } => render_message("You", content, user_style(), width),
+            HistoryCell::User { content } => {
+                render_message("You", content, user_style(), width, false)
+            }
             HistoryCell::Assistant { content, .. } => {
-                render_message("MiniMax", content, assistant_style(), width)
+                render_message("MiniMax", content, assistant_style(), width, true)
             }
             HistoryCell::System { content } => {
-                render_message("System", content, system_style(), width)
+                render_message("System", content, system_style(), width, false)
             }
             HistoryCell::ThinkingSummary { summary } => {
-                render_message("Thinking", summary, thinking_style(), width)
+                render_message("Thinking", summary, thinking_style(), width, false)
             }
             HistoryCell::Tool(cell) => cell.lines(width),
             HistoryCell::Error {
@@ -344,7 +346,13 @@ impl PlanUpdateCell {
         )));
 
         if let Some(explanation) = self.explanation.as_ref() {
-            lines.extend(render_message(" ", explanation, system_style(), width));
+            lines.extend(render_message(
+                " ",
+                explanation,
+                system_style(),
+                width,
+                false,
+            ));
         }
 
         for step in &self.steps {
@@ -852,8 +860,13 @@ pub fn extract_reasoning_summary(text: &str) -> Option<String> {
         Some(fallback.to_string())
     }
 }
-
-fn render_message(prefix: &str, content: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+fn render_message(
+    prefix: &str,
+    content: &str,
+    style: Style,
+    width: u16,
+    markdown: bool,
+) -> Vec<Line<'static>> {
     let prefix_width = UnicodeWidthStr::width(prefix);
     let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prefix_width_u16).max(1));
@@ -865,6 +878,23 @@ fn render_message(prefix: &str, content: &str, style: Style, width: u16) -> Vec<
 
     for segment in segments {
         match segment {
+            MessageSegment::Text(text) if markdown => {
+                // Render markdown constructs (headings, emphasis, lists, inline code)
+                for row in crate::tui::markdown::markdown_rows(&text, style, content_width) {
+                    if first_line {
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
+                            Span::raw(" "),
+                        ]));
+                        lines.last_mut().unwrap().spans.extend(row);
+                        first_line = false;
+                    } else {
+                        let mut row_line = Line::from(Span::raw(" ".repeat(prefix_width + 1)));
+                        row_line.spans.extend(row);
+                        lines.push(row_line);
+                    }
+                }
+            }
             MessageSegment::Text(text) => {
                 // Render regular text with wrapping
                 for line in text.lines() {
@@ -1325,5 +1355,83 @@ mod tests {
         let text = "Line one\nLine two";
         let summary = extract_reasoning_summary(text).expect("summary should exist");
         assert_eq!(summary, "Line one\nLine two");
+    }
+
+    #[test]
+    fn assistant_messages_render_markdown_not_raw_syntax() {
+        use super::HistoryCell;
+        use ratatui::style::Modifier;
+        use ratatui::text::Line;
+
+        let cell = HistoryCell::Assistant {
+            content: "# Summary\n\nUses **tiny11maker.ps1** and `oscdimg.exe`.\n\n- first point\n- second point"
+                .to_string(),
+            streaming: false,
+        };
+        let lines: Vec<Line> = cell.lines(80);
+        let spans: Vec<&ratatui::text::Span> =
+            lines.iter().flat_map(|line| line.spans.iter()).collect();
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+
+        // Markdown syntax is consumed, not displayed literally.
+        assert!(!text.contains('#'), "raw heading marker in: {text}");
+        assert!(!text.contains("**"), "raw bold markers in: {text}");
+        assert!(!text.contains('`'), "raw code markers in: {text}");
+        // Content is preserved with bullet markers applied.
+        assert!(text.contains("Summary"));
+        assert!(text.contains("tiny11maker.ps1"));
+        assert!(text.contains("• first point"));
+        assert!(text.contains("• second point"));
+
+        // Styling is applied at the span level: H1 bold orange, inline code green.
+        let heading = spans
+            .iter()
+            .find(|s| s.content.contains("Summary"))
+            .expect("heading span");
+        assert_eq!(heading.style.fg, Some(crate::palette::MINIMAX_ORANGE));
+        assert!(heading.style.add_modifier.contains(Modifier::BOLD));
+        let code = spans
+            .iter()
+            .find(|s| s.content.contains("oscdimg.exe"))
+            .expect("code span");
+        assert_eq!(code.style.fg, Some(crate::palette::MINIMAX_GREEN));
+
+        // Render a full frame headlessly and confirm the styles reach the buffer.
+        let backend = ratatui::backend::TestBackend::new(90, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(lines.clone()),
+                    frame.area(),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let orange = ratatui::style::Color::Rgb(
+            crate::palette::MINIMAX_ORANGE_RGB.0,
+            crate::palette::MINIMAX_ORANGE_RGB.1,
+            crate::palette::MINIMAX_ORANGE_RGB.2,
+        );
+        let heading_styled = buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "S" && cell.fg == orange);
+        assert!(
+            heading_styled,
+            "heading 'S' cell did not render with the heading color"
+        );
+
+        // User messages stay verbatim.
+        let user = HistoryCell::User {
+            content: "a **literal** message".to_string(),
+        };
+        let user_lines = user.lines(80);
+        let user_text: String = user_lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(user_text.contains("**"));
     }
 }

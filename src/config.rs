@@ -1193,12 +1193,6 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 
 /// Save an API key to the config file. Creates the file if it doesn't exist.
 pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
-    fn is_api_key_assignment(line: &str) -> bool {
-        let trimmed = line.trim_start();
-        trimmed
-            .strip_prefix("api_key")
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
-    }
 
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
@@ -1247,6 +1241,87 @@ default_text_model = "MiniMax-M2.5"
     Ok(config_path)
 }
 
+/// True when a line assigns to `api_key` (not `api_key_2` or similar).
+fn is_api_key_assignment(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("api_key")
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
+/// Escape a value for a TOML basic string.
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Save a provider API key under `[providers.<name>]` in the config file.
+///
+/// The default `minimax` provider maps to the top-level `api_key` key
+/// (legacy form). Creates the config file, the `[providers]` table, or the
+/// provider entry as needed, and preserves existing formatting and comments.
+pub fn save_provider_api_key(provider: &str, api_key: &str) -> Result<PathBuf> {
+    let name = provider.trim();
+    anyhow::ensure!(!name.is_empty(), "Provider name cannot be empty");
+    anyhow::ensure!(
+        !name.contains('.') && !name.contains(']') && !name.contains('['),
+        "Invalid provider name '{name}'"
+    );
+    if name == DEFAULT_PROVIDER_NAME {
+        return save_api_key(api_key.trim());
+    }
+
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let existing = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+
+    let section = format!("[providers.{name}]");
+    let assignment = format!("api_key = \"{}\"", escape_toml_string(api_key.trim()));
+
+    // Locate the provider section and any existing api_key line inside it.
+    let mut section_start: Option<usize> = None;
+    let mut key_line: Option<usize> = None;
+    let mut in_section = false;
+    for (index, line) in existing.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed == section;
+            if in_section && section_start.is_none() {
+                section_start = Some(index);
+            }
+            continue;
+        }
+        if in_section && key_line.is_none() && is_api_key_assignment(trimmed) {
+            key_line = Some(index);
+        }
+    }
+
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    match (key_line, section_start) {
+        (Some(index), _) => lines[index] = assignment,
+        (None, Some(header)) => lines.insert(header + 1, assignment),
+        (None, None) => {
+            // No section yet: append a fresh one, separated by a blank line.
+            if !lines.is_empty() && !lines.last().is_some_and(String::is_empty) {
+                lines.push(String::new());
+            }
+            lines.push(section);
+            lines.push(assignment);
+        }
+    }
+
+    let mut content = lines.join("\n");
+    content.push('\n');
+    fs::write(&config_path, content)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+
+    Ok(config_path)
+}
+
 /// Check if an API key is configured (either in config or environment)
 pub fn has_api_key(config: &Config) -> bool {
     config.active_provider().is_ok()
@@ -1288,7 +1363,8 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
+    use parking_lot::Mutex;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -1364,7 +1440,7 @@ mod tests {
 
     #[test]
     fn save_api_key_writes_config() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = env_lock().lock();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1385,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_tilde_expansion_in_paths() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = env_lock().lock();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1455,7 +1531,7 @@ mod tests {
 
     #[test]
     fn test_save_api_key_doesnt_match_similar_keys() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = env_lock().lock();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1481,6 +1557,125 @@ mod tests {
         let contents = fs::read_to_string(&config_path)?;
         assert!(contents.contains("api_key_backup = \"old\""));
         assert!(contents.contains("api_key = \"new-key\""));
+        Ok(())
+    }
+
+    #[test]
+    fn save_provider_api_key_appends_new_section() -> Result<()> {
+        let _lock = env_lock().lock();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root =
+            env::temp_dir().join(format!("minimax-login-append-{nanos}"));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".minimax").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        fs::write(
+            &config_path,
+            "api_key = \"top-level\"\n\n[providers.deepseek]\nurl = \"https://api.deepseek.com/v1\"\n",
+        )?;
+
+        let saved = save_provider_api_key("kimi", "sk-kimi")?;
+        assert_eq!(saved, config_path);
+
+        let contents = fs::read_to_string(&config_path)?;
+        assert!(
+            contents.contains("[providers.kimi]\napi_key = \"sk-kimi\""),
+            "appended section missing:\n{contents}"
+        );
+        // Existing content untouched
+        assert!(contents.contains("api_key = \"top-level\""));
+        assert!(contents.contains("[providers.deepseek]"));
+
+        // Round-trips through the config loader
+        let config = Config::load(Some(config_path), None)?;
+        let providers = config.providers.expect("providers table");
+        assert_eq!(
+            providers.get("kimi").and_then(|p| p.api_key.as_deref()),
+            Some("sk-kimi")
+        );
+        fs::remove_dir_all(&temp_root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn save_provider_api_key_updates_existing_section() -> Result<()> {
+        let _lock = env_lock().lock();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root =
+            env::temp_dir().join(format!("minimax-login-update-{nanos}"));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".minimax").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        fs::write(
+            &config_path,
+            "[providers.deepseek]\nurl = \"https://api.deepseek.com/v1\"\napi_key = \"old-key\"\n\n[providers.zai]\nurl = \"https://api.z.ai/api/anthropic\"\n",
+        )?;
+
+        // Replace an existing key line
+        save_provider_api_key("deepseek", "new-key")?;
+        // Insert a key into a section that has none
+        save_provider_api_key("zai", "sk-zai")?;
+
+        let contents = fs::read_to_string(&config_path)?;
+        assert!(
+            contents
+                .contains("[providers.deepseek]\nurl = \"https://api.deepseek.com/v1\"\napi_key = \"new-key\""),
+            "deepseek section wrong:\n{contents}"
+        );
+        assert!(
+            contents.contains("[providers.zai]")
+                && contents.contains("url = \"https://api.z.ai/api/anthropic\"")
+                && contents.contains("api_key = \"sk-zai\""),
+            "zai section wrong:\n{contents}"
+        );
+        assert!(!contents.contains("old-key"));
+
+        let config = Config::load(Some(config_path), None)?;
+        let providers = config.providers.expect("providers table");
+        assert_eq!(
+            providers.get("deepseek").and_then(|p| p.api_key.as_deref()),
+            Some("new-key")
+        );
+        assert_eq!(
+            providers.get("zai").and_then(|p| p.api_key.as_deref()),
+            Some("sk-zai")
+        );
+        fs::remove_dir_all(&temp_root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn save_provider_api_key_minimax_writes_top_level() -> Result<()> {
+        let _lock = env_lock().lock();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root =
+            env::temp_dir().join(format!("minimax-login-minimax-{nanos}"));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".minimax").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        fs::write(&config_path, "api_key = \"old\"\n")?;
+
+        save_provider_api_key("minimax", "sk-mini")?;
+
+        let contents = fs::read_to_string(&config_path)?;
+        assert!(contents.contains("api_key = \"sk-mini\""));
+        assert!(!contents.contains("[providers.minimax]"));
+        fs::remove_dir_all(&temp_root).ok();
         Ok(())
     }
 

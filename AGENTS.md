@@ -30,4 +30,4 @@ This project uses Git. See .gitignore for excluded files.
 
 ## Important Notes
 
-<!-- Add project-specific notes here -->
+- Kimi Coding Plan model slugs have no vendor prefix: `k3-256k` (not `kimi-k3-256k`), `k2.7-code` style. The Kimi Coding Plan endpoint is `https://api.kimi.com/coding/v1` — a separate service and key from `api.moonshot.ai`.

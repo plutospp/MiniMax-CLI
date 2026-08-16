@@ -26,6 +26,8 @@ pub struct HeaderData<'a> {
     pub background: ratatui::style::Color,
     pub shell_mode: bool,
     pub pins: Vec<&'a PinnedMessage>,
+    /// Duo coach model override; shown alongside the player model in Duo mode.
+    pub coach_model: Option<&'a str>,
 }
 
 impl<'a> HeaderData<'a> {
@@ -49,12 +51,20 @@ impl<'a> HeaderData<'a> {
             background,
             shell_mode: false,
             pins: Vec::new(),
+            coach_model: None,
         }
     }
 
     #[must_use]
     pub fn with_provider(mut self, provider: &'a str) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Set the Duo coach model (shown in Duo mode only).
+    #[must_use]
+    pub fn with_coach_model(mut self, coach_model: &'a str) -> Self {
+        self.coach_model = Some(coach_model);
         self
     }
 
@@ -136,22 +146,42 @@ impl<'a> HeaderWidget<'a> {
         )
     }
 
-    /// Build the model name span.
-    fn model_span(&self) -> Span<'static> {
-        let label = if let Some(provider) = self.data.provider {
-            format!("{provider}/{}", self.data.model)
-        } else {
-            self.data.model.to_string()
-        };
-        let display_name = if label.len() > 28 {
-            format!("{}...", &label[..25])
-        } else {
-            label
+    /// Build the model span(s): both player and coach models in Duo mode.
+    fn model_spans(&self) -> Vec<Span<'static>> {
+        let label = |model: &str| {
+            let full = if let Some(provider) = self.data.provider {
+                format!("{provider}/{model}")
+            } else {
+                model.to_string()
+            };
+            if full.len() > 28 {
+                format!("{}...", &full[..25])
+            } else {
+                full
+            }
         };
 
-        Span::styled(display_name, Style::default().fg(palette::TEXT_MUTED))
+        if self.data.mode == AppMode::Duo
+            && let Some(coach) = self.data.coach_model
+            && coach != self.data.model
+        {
+            return vec![
+                Span::styled("player:", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(
+                    label(self.data.model),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::styled(" | ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled("coach:", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(label(coach), Style::default().fg(palette::MINIMAX_MAGENTA)),
+            ];
+        }
+
+        vec![Span::styled(
+            label(self.data.model),
+            Style::default().fg(palette::TEXT_MUTED),
+        )]
     }
-
     /// Build the context meter span with color based on usage.
     fn context_meter(&self) -> Span<'static> {
         let remaining = self.data.context_remaining_percent();
@@ -251,8 +281,8 @@ impl Renderable for HeaderWidget<'_> {
         let mut left_spans = vec![
             self.mode_badge(),
             Span::styled(" | ", Style::default().fg(palette::TEXT_MUTED)),
-            self.model_span(),
         ];
+        left_spans.extend(self.model_spans());
 
         let context_span = self.context_meter();
         let streaming_span = self.streaming_indicator();
@@ -333,10 +363,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn duo_header_shows_player_and_coach_models() {
+        let mut data = HeaderData::new(AppMode::Duo, "k3-256k", 0, false, palette::MINIMAX_INK)
+            .with_provider("kimi");
+        data.coach_model = Some("glm-5.3");
+
+        let widget = HeaderWidget::new(data);
+        let spans = widget.model_spans();
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("player:kimi/k3-256k"),
+            "player missing: {text}"
+        );
+        assert!(text.contains("coach:kimi/glm-5.3"), "coach missing: {text}");
+    }
+
+    #[test]
+    fn non_duo_modes_ignore_coach_model() {
+        let mut data = HeaderData::new(AppMode::Normal, "k3-256k", 0, false, palette::MINIMAX_INK);
+        data.coach_model = Some("glm-5.3");
+
+        let widget = HeaderWidget::new(data);
+        let spans = widget.model_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "k3-256k");
+    }
+
+    #[test]
+    fn duo_header_without_coach_shows_single_model() {
+        let data = HeaderData::new(AppMode::Duo, "k3-256k", 0, false, palette::MINIMAX_INK);
+
+        let widget = HeaderWidget::new(data);
+        let spans = widget.model_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "k3-256k");
+    }
+    #[test]
     fn test_context_percent_calculation() {
         let data = HeaderData {
             mode: AppMode::Normal,
             model: "minimax-m2.1",
+            coach_model: None,
             provider: None,
             context_used: 64_000,
             context_max: Some(128_000),
@@ -361,6 +428,7 @@ mod tests {
             background: palette::MINIMAX_INK,
             shell_mode: false,
             pins: Vec::new(),
+            coach_model: None,
         };
         assert_eq!(data.context_percent(), 0);
         assert_eq!(data.context_remaining_percent(), 100);
@@ -378,6 +446,7 @@ mod tests {
             background: palette::MINIMAX_INK,
             shell_mode: false,
             pins: Vec::new(),
+            coach_model: None,
         };
         assert_eq!(data.context_percent(), 0);
         assert_eq!(data.context_remaining_percent(), 100);

@@ -40,9 +40,11 @@ impl ChatWidget {
         let mut content_area = area;
         let mut scrollbar_area = None;
 
-        let show_scrollbar = !matches!(app.transcript_scroll, TranscriptScroll::ToBottom)
-            && area.width > 1
-            && area.height > 1;
+        // Reserve the scrollbar column whenever there is room. The thumb is
+        // drawn only when content overflows, but keeping the column permanent
+        // avoids reflow when crossing the bottom boundary and gives wheel
+        // scroll and drag a stable target.
+        let show_scrollbar = area.width > 1 && area.height > 1;
         if show_scrollbar {
             content_area.width = content_area.width.saturating_sub(1);
             scrollbar_area = Some(Rect {
@@ -118,8 +120,9 @@ impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(self.lines.clone());
         paragraph.render(self.content_area, buf);
-
-        if let (Some(scrollbar_area), Some(scrollbar)) = (self.scrollbar_area, &self.scrollbar) {
+        if let (Some(scrollbar_area), Some(scrollbar)) = (self.scrollbar_area, &self.scrollbar)
+            && scrollbar.total_lines > scrollbar.visible_lines
+        {
             render_scrollbar(
                 buf,
                 scrollbar_area,
@@ -677,5 +680,49 @@ mod tests {
         let mut lines = vec![Line::from("one")];
         pad_lines_to_bottom(&mut lines, 0);
         assert_eq!(lines, vec![Line::from("one")]);
+    }
+
+    #[test]
+    fn chat_widget_reserves_scrollbar_column_even_at_bottom() {
+        use super::ChatWidget;
+        use crate::config::Config;
+        use crate::tui::app::{App, TuiOptions};
+        use crate::tui::history::HistoryCell;
+        use ratatui::layout::Rect;
+        use std::path::PathBuf;
+
+        let options = TuiOptions {
+            model: "test-model".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            yolo: false,
+            resume_session_id: None,
+        };
+        let mut app = App::new(options, &Config::default());
+        app.add_message(HistoryCell::System {
+            content: "short content".to_string(),
+        });
+
+        // At bottom with no overflow: the column is still reserved so mouse
+        // wheel/drag over it has a target, and layout doesn't reflow later.
+        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 40, 10));
+        assert!(
+            widget.scrollbar_area.is_some(),
+            "scrollbar column not reserved"
+        );
+        assert_eq!(widget.content_area.width, 39);
+        assert!(widget.scrollbar.is_some());
+
+        // No overflow -> thumb must not draw (total <= visible).
+        if let Some(scrollbar) = widget.scrollbar {
+            assert!(scrollbar.total_lines <= scrollbar.visible_lines);
+        }
     }
 }

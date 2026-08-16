@@ -256,6 +256,8 @@ pub struct App {
     pub rlm_session: SharedRlmSession,
     /// Duo mode session state (player-coach autocoding loop)
     pub duo_session: SharedDuoSession,
+    /// Duo coach model override (None = active model, same as player)
+    pub coach_model: Option<String>,
     /// Whether RLM REPL input mode is active.
     pub rlm_repl_active: bool,
     /// Todo list for `TodoWriteTool`
@@ -457,10 +459,7 @@ impl App {
         let show_tool_details = settings.show_tool_details;
         let max_input_history = settings.max_input_history;
         let ui_theme = palette::ui_theme(&settings.theme);
-        let model = settings
-            .default_model
-            .clone()
-            .unwrap_or(model);
+        let model = settings.default_model.clone().unwrap_or(model);
         let provider = settings
             .default_provider
             .clone()
@@ -591,6 +590,9 @@ impl App {
             project_doc: None,
             plan_state,
             rlm_session: Arc::new(Mutex::new(RlmSession::default())),
+            coach_model: crate::settings::Settings::load()
+                .ok()
+                .and_then(|s| s.coach_model),
             duo_session: new_shared_duo_session(),
             rlm_repl_active: false,
             todos: new_shared_todo_list(),
@@ -1343,8 +1345,18 @@ pub enum AppAction {
     OpenModelPicker,
     /// Open the provider picker modal
     OpenProviderPicker,
+    /// Set the Duo coach model (None = use the active model)
+    SetCoachModel {
+        model: Option<String>,
+    },
     /// Switch to a named LLM provider and reload the text client
-    SwitchProvider { name: String },
+    SwitchProvider {
+        name: String,
+    },
+    /// Prompt for the API key of a provider (masked input)
+    RequestLogin {
+        provider: String,
+    },
     /// Open the command history picker modal
     OpenHistoryPicker,
     /// Reload configuration from disk

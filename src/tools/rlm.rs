@@ -29,7 +29,7 @@ const MAX_RECURSION_DEPTH: u32 = 3;
 /// Maximum tool iterations within a single sub-call
 const MAX_TOOL_ITERATIONS: u32 = 10;
 
-fn normalize_load_path(raw: &str) -> Result<String, ToolError> {
+pub(crate) fn normalize_load_path(raw: &str) -> Result<String, ToolError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(ToolError::invalid_input("Path is required"));
@@ -287,11 +287,7 @@ pub struct RlmQueryTool {
 
 impl RlmQueryTool {
     #[must_use]
-    pub fn new(
-        session: SharedRlmSession,
-        client: Option<TextClient>,
-        model: String,
-    ) -> Self {
+    pub fn new(session: SharedRlmSession, client: Option<TextClient>, model: String) -> Self {
         Self {
             session,
             client,
