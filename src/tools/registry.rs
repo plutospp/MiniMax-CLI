@@ -469,10 +469,14 @@ impl ToolRegistryBuilder {
         self,
         session: SharedDuoSession,
         coach: Option<super::duo::CoachExecution>,
+        player_endpoint: Option<super::duo::PlayerEndpoint>,
     ) -> Self {
         use super::duo::{DuoAdvanceTool, DuoCoachTool, DuoInitTool, DuoPlayerTool, DuoStatusTool};
         self.with_tool(Arc::new(DuoInitTool::new(session.clone())))
-            .with_tool(Arc::new(DuoPlayerTool::new(session.clone())))
+            .with_tool(Arc::new(DuoPlayerTool::new(
+                session.clone(),
+                player_endpoint,
+            )))
             .with_tool(Arc::new(DuoCoachTool::new(session.clone(), coach)))
             .with_tool(Arc::new(DuoAdvanceTool::new(session.clone())))
             .with_tool(Arc::new(DuoStatusTool::new(session)))
@@ -747,7 +751,7 @@ mod tests {
 
         let tmp = tempdir().expect("tempdir");
         let registry = ToolRegistryBuilder::new()
-            .with_duo_tools(new_shared_duo_session(), None)
+            .with_duo_tools(new_shared_duo_session(), None, None)
             .build(ToolContext::new(tmp.path().to_path_buf()));
 
         assert!(registry.get("duo_coach").is_some());

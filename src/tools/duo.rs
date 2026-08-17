@@ -11,6 +11,132 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     normalize_at_path, optional_str, required_str,
 };
+/// Configuration for an external coach model endpoint (OpenAI-compatible).
+#[derive(Debug, Clone)]
+pub struct CoachEndpoint {
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+/// Configuration for an external player model endpoint (OpenAI-compatible).
+#[derive(Debug, Clone)]
+pub struct PlayerEndpoint {
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+impl CoachEndpoint {
+    /// Build an endpoint from `[duo]` config; requires model, base_url, and
+    /// api_key to all be present and non-empty.
+    #[must_use]
+    pub fn from_config(cfg: &crate::config::DuoConfig) -> Option<Self> {
+        let model = cfg.coach_model.as_ref()?;
+        let base_url = cfg.coach_base_url.as_ref()?;
+        let api_key = cfg.coach_api_key.as_ref()?;
+        if model.trim().is_empty() || base_url.trim().is_empty() || api_key.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            model: model.clone(),
+            base_url: base_url.clone(),
+            api_key: api_key.clone(),
+        })
+    }
+
+    /// Convert the endpoint into a `CoachExecution` that calls the external
+    /// OpenAI-compatible `/chat/completions` API.
+    #[must_use]
+    pub fn into_execution(self, temperature: f32, max_tokens: u32) -> CoachExecution {
+        let model = self.model;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let api_key = self.api_key;
+        let call: CoachCall = std::sync::Arc::new(move |request| {
+            let url = url.clone();
+            let api_key = api_key.clone();
+            Box::pin(async move {
+                let messages: Vec<serde_json::Value> = request
+                    .messages
+                    .iter()
+                    .map(|message| {
+                        serde_json::json!({
+                            "role": message.role,
+                            "content": message.content.iter().filter_map(|block| match block {
+                                crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            }).collect::<Vec<_>>().join("\n"),
+                        })
+                    })
+                    .collect();
+                let body = serde_json::json!({
+                    "model": request.model,
+                    "messages": messages,
+                    "max_tokens": request.max_tokens,
+                    "temperature": request.temperature.unwrap_or(temperature),
+                });
+                let response = reqwest::Client::new()
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .json(&body)
+                    .send()
+                    .await?;
+                let status = response.status();
+                let payload: serde_json::Value = response.json().await?;
+                if !status.is_success() {
+                    anyhow::bail!(
+                        "endpoint returned {status}: {}",
+                        payload
+                            .pointer("/error/message")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("no error detail")
+                    );
+                }
+                let content = payload
+                    .pointer("/choices/0/message/content")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("endpoint response missing choices/0/message/content")
+                    })?;
+                Ok(crate::models::MessageResponse {
+                    id: String::new(),
+                    r#type: "message".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![crate::models::ContentBlock::Text {
+                        text: content.to_string(),
+                        cache_control: None,
+                    }],
+                    model: request.model.clone(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: crate::models::Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                })
+            })
+        });
+        CoachExecution::with_call(model, temperature, max_tokens, call)
+    }
+}
+
+impl PlayerEndpoint {
+    /// Build an endpoint from `[duo]` config; requires model, base_url, and
+    /// api_key to all be present and non-empty.
+    #[must_use]
+    pub fn from_config(cfg: &crate::config::DuoConfig) -> Option<Self> {
+        let model = cfg.player_model.as_ref()?;
+        let base_url = cfg.player_base_url.as_ref()?;
+        let api_key = cfg.player_api_key.as_ref()?;
+        if model.trim().is_empty() || base_url.trim().is_empty() || api_key.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            model: model.clone(),
+            base_url: base_url.clone(),
+            api_key: api_key.clone(),
+        })
+    }
+}
 
 /// Per-file byte cap for coach ground-truth inlining.
 const MAX_COACH_FILE_BYTES: usize = 64 * 1024;
@@ -60,8 +186,8 @@ impl CoachExecution {
         }
     }
 
-    /// Build a coach execution with a custom call (tests).
-    #[cfg(test)]
+    /// Build a coach execution with a custom call (tests and external
+    /// endpoint adapters).
     #[must_use]
     pub fn with_call(model: String, temperature: f32, max_tokens: u32, call: CoachCall) -> Self {
         Self {
@@ -192,12 +318,16 @@ impl ToolSpec for DuoInitTool {
 /// Generate the player prompt for implementation.
 pub struct DuoPlayerTool {
     session: SharedDuoSession,
+    player_endpoint: Option<PlayerEndpoint>,
 }
 
 impl DuoPlayerTool {
     #[must_use]
-    pub fn new(session: SharedDuoSession) -> Self {
-        Self { session }
+    pub fn new(session: SharedDuoSession, player_endpoint: Option<PlayerEndpoint>) -> Self {
+        Self {
+            session,
+            player_endpoint,
+        }
     }
 }
 
@@ -236,41 +366,101 @@ impl ToolSpec for DuoPlayerTool {
             .map(str::to_string)
             .unwrap_or_else(|| "Implementation in progress".to_string());
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| ToolError::execution_failed("Failed to lock Duo session"))?;
+        let (prompt, _advanced) = {
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|_| ToolError::execution_failed("Failed to lock Duo session"))?;
 
-        let state = session
-            .get_active_mut()
-            .ok_or_else(|| ToolError::invalid_input("No active session. Call duo_init first."))?;
+            let state = session.get_active_mut().ok_or_else(|| {
+                ToolError::invalid_input("No active session. Call duo_init first.")
+            })?;
 
-        // Check we're in a valid phase for player
-        match state.phase {
-            DuoPhase::Init | DuoPhase::Player => {
-                // Generate prompt first
-                let prompt = generate_player_prompt(state);
+            // Check we're in a valid phase for player
+            match state.phase {
+                DuoPhase::Init | DuoPhase::Player => {
+                    // Generate prompt first
+                    let prompt = generate_player_prompt(state);
 
-                // Advance to Coach phase
-                state
-                    .advance_to_coach(implementation_summary)
-                    .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+                    // Advance to Coach phase
+                    state
+                        .advance_to_coach(implementation_summary)
+                        .map_err(|e| ToolError::execution_failed(e.to_string()))?;
 
-                Ok(ToolResult::success(format!(
-                    "=== PLAYER PROMPT ===\n\n{}\n\n---\nAdvanced to Coach phase. Use duo_coach for verification.",
-                    prompt
-                )))
+                    (prompt, true)
+                }
+                DuoPhase::Coach => {
+                    return Err(ToolError::invalid_input(
+                        "Already in Coach phase. Use duo_coach to get verification prompt.",
+                    ));
+                }
+                DuoPhase::Approved => {
+                    return Err(ToolError::invalid_input(
+                        "Session already approved. Start a new session with duo_init.",
+                    ));
+                }
+                DuoPhase::Timeout => {
+                    return Err(ToolError::invalid_input(
+                        "Session timed out. Start a new session with duo_init.",
+                    ));
+                }
             }
-            DuoPhase::Coach => Err(ToolError::invalid_input(
-                "Already in Coach phase. Use duo_coach to get verification prompt.",
-            )),
-            DuoPhase::Approved => Err(ToolError::invalid_input(
-                "Session already approved. Start a new session with duo_init.",
-            )),
-            DuoPhase::Timeout => Err(ToolError::invalid_input(
-                "Session timed out. Start a new session with duo_init.",
-            )),
+        };
+
+        if let Some(endpoint) = &self.player_endpoint {
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "model": endpoint.model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": 4096,
+                "temperature": 0.7
+            });
+
+            let mut request_failed = true;
+            let mut feedback = String::new();
+
+            if let Ok(resp) = client
+                .post(format!(
+                    "{}/chat/completions",
+                    endpoint.base_url.trim_end_matches('/')
+                ))
+                .header("Authorization", format!("Bearer {}", endpoint.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                && resp.status().is_success()
+                && let Ok(json_val) = resp.json::<serde_json::Value>().await
+                && let Some(content) = json_val
+                    .pointer("/choices/0/message/content")
+                    .and_then(|v| v.as_str())
+            {
+                feedback = content.to_string();
+                request_failed = false;
+            }
+
+            if !request_failed {
+                return Ok(ToolResult::success(format!(
+                    "=== PLAYER FEEDBACK ({}): {}\n\n{}\n\n---\nAdvanced to Coach phase. Use duo_coach for verification.",
+                    endpoint.model, feedback, prompt
+                )));
+            } else {
+                return Ok(ToolResult::success(format!(
+                    "WARNING: Player endpoint failed. Falling back to raw prompt.\n\n=== PLAYER PROMPT ===\n\n{}\n\n---\nAdvanced to Coach phase. Use duo_coach for verification.",
+                    prompt
+                )));
+            }
         }
+
+        Ok(ToolResult::success(format!(
+            "=== PLAYER PROMPT ===\n\n{}\n\n---\nAdvanced to Coach phase. Use duo_coach for verification.",
+            prompt
+        )))
     }
 }
 
@@ -645,7 +835,7 @@ mod tests {
     #[test]
     fn test_duo_player_tool_schema() {
         let session = new_shared_duo_session();
-        let tool = DuoPlayerTool::new(session);
+        let tool = DuoPlayerTool::new(session, None);
 
         assert_eq!(tool.name(), "duo_player");
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);

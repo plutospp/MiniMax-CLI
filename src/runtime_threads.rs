@@ -287,7 +287,7 @@ impl RuntimeThreadStore {
                 out.push(turn);
             }
         }
-        out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        out.sort_by_key(|a| a.created_at);
         Ok(out)
     }
 
@@ -1028,6 +1028,7 @@ impl RuntimeThreadManager {
             coach_model: None,
             duo_coach_temperature: self.config.duo_coach_temperature(),
             duo_default_max_tokens: self.config.duo_default_max_tokens(),
+            duo: self.config.duo.clone(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

@@ -115,6 +115,12 @@ pub struct DuoConfig {
     pub default_max_tokens: Option<u32>,
     pub coach_temperature: Option<f32>,
     pub player_temperature: Option<f32>,
+    pub coach_model: Option<String>,
+    pub coach_base_url: Option<String>,
+    pub coach_api_key: Option<String>,
+    pub player_model: Option<String>,
+    pub player_base_url: Option<String>,
+    pub player_api_key: Option<String>,
 }
 
 /// Compaction configuration loaded from config files.
@@ -706,6 +712,12 @@ impl Config {
             default_max_tokens: Some(8192),
             coach_temperature: Some(0.3),
             player_temperature: Some(0.7),
+            coach_model: None,
+            coach_base_url: None,
+            coach_api_key: None,
+            player_model: None,
+            player_base_url: None,
+            player_api_key: None,
         };
 
         let Some(cfg) = &self.duo else {
@@ -718,6 +730,12 @@ impl Config {
             default_max_tokens: cfg.default_max_tokens.or(defaults.default_max_tokens),
             coach_temperature: cfg.coach_temperature.or(defaults.coach_temperature),
             player_temperature: cfg.player_temperature.or(defaults.player_temperature),
+            coach_model: cfg.coach_model.clone(),
+            coach_base_url: cfg.coach_base_url.clone(),
+            coach_api_key: cfg.coach_api_key.clone(),
+            player_model: cfg.player_model.clone(),
+            player_base_url: cfg.player_base_url.clone(),
+            player_api_key: cfg.player_api_key.clone(),
         }
     }
 
@@ -911,6 +929,36 @@ fn apply_env_overrides(config: &mut Config) {
             .compaction
             .get_or_insert_with(CompactionSettings::default);
         compaction.model_auto_compact_token_limit = Some(parsed.max(1));
+    }
+    if let Ok(value) = std::env::var("MINIMAX_COACH_MODEL") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.coach_model = Some(value);
+    }
+    if let Ok(value) = std::env::var("MINIMAX_COACH_BASE_URL") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.coach_base_url = Some(value);
+    }
+    if let Ok(value) = std::env::var("MINIMAX_COACH_API_KEY") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.coach_api_key = Some(value);
+    } else if let Ok(value) = std::env::var("ZAI_API_KEY") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.coach_api_key = Some(value);
+    }
+    if let Ok(value) = std::env::var("MINIMAX_PLAYER_MODEL") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.player_model = Some(value);
+    }
+    if let Ok(value) = std::env::var("MINIMAX_PLAYER_BASE_URL") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.player_base_url = Some(value);
+    }
+    if let Ok(value) = std::env::var("MINIMAX_PLAYER_API_KEY") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.player_api_key = Some(value);
+    } else if let Ok(value) = std::env::var("ZAI_API_KEY") {
+        let duo = config.duo.get_or_insert_with(DuoConfig::default);
+        duo.player_api_key = Some(value);
     }
 }
 
@@ -1165,7 +1213,24 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         rlm: override_cfg.rlm.or(base.rlm),
 
         // Duo configuration
-        duo: override_cfg.duo.or(base.duo),
+        duo: match (override_cfg.duo, base.duo) {
+            (Some(o), Some(b)) => Some(DuoConfig {
+                max_turns: o.max_turns.or(b.max_turns),
+                approval_threshold: o.approval_threshold.or(b.approval_threshold),
+                default_max_tokens: o.default_max_tokens.or(b.default_max_tokens),
+                coach_temperature: o.coach_temperature.or(b.coach_temperature),
+                player_temperature: o.player_temperature.or(b.player_temperature),
+                coach_model: o.coach_model.or(b.coach_model),
+                coach_base_url: o.coach_base_url.or(b.coach_base_url),
+                coach_api_key: o.coach_api_key.or(b.coach_api_key),
+                player_model: o.player_model.or(b.player_model),
+                player_base_url: o.player_base_url.or(b.player_base_url),
+                player_api_key: o.player_api_key.or(b.player_api_key),
+            }),
+            (Some(o), None) => Some(o),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        },
         compaction: override_cfg.compaction.or(base.compaction),
 
         // Standard configuration

@@ -205,6 +205,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         coach_model: app.coach_model.clone(),
         duo_coach_temperature: api_config.duo_coach_temperature(),
         duo_default_max_tokens: api_config.duo_default_max_tokens(),
+        duo: api_config.duo.clone(),
     };
 
     // Spawn the Engine - it will handle all API communication
@@ -3448,14 +3449,13 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 app.transcript_selection.head = Some(point);
             }
         }
-        MouseEventKind::Up(MouseButton::Left) => {
-            if app.transcript_selection.dragging {
+        MouseEventKind::Up(MouseButton::Left)
+            if app.transcript_selection.dragging => {
                 app.transcript_selection.dragging = false;
                 if selection_has_content(app) {
                     copy_active_selection(app);
                 }
             }
-        }
         _ => {}
     }
 }

@@ -90,7 +90,6 @@ pub struct EngineConfig {
     pub cache_system: bool,
     /// Enable prompt caching for tools
     pub cache_tools: bool,
-    /// Enable automatic context compaction when thresholds are exceeded.
     pub auto_compact: bool,
     /// Compaction thresholds and prompt tuning.
     pub compaction: CompactionConfig,
@@ -100,6 +99,8 @@ pub struct EngineConfig {
     pub duo_coach_temperature: f32,
     /// Max tokens for the Duo coach turn.
     pub duo_default_max_tokens: u32,
+    /// Duo configuration (external coach/player endpoints).
+    pub duo: Option<crate::config::DuoConfig>,
 }
 
 impl Default for EngineConfig {
@@ -126,6 +127,7 @@ impl Default for EngineConfig {
             cache_tools: true,   // Enable by default
             auto_compact: false, // Disabled by default
             compaction: CompactionConfig::default(),
+            duo: None,
         }
     }
 }
@@ -444,7 +446,7 @@ impl Engine {
         for warning in shell_report
             .warnings
             .into_iter()
-            .chain(subagent_report.warnings.into_iter())
+            .chain(subagent_report.warnings)
         {
             let _ = self
                 .tx_event
@@ -1038,7 +1040,7 @@ impl Engine {
         }
         if mode == AppMode::Duo {
             if self.config.features.enabled(Feature::Duo) {
-                let coach = match (
+                let mut coach = match (
                     self.config.coach_model.clone(),
                     self.minimax_text_client.clone(),
                 ) {
@@ -1059,7 +1061,29 @@ impl Engine {
                     }
                     (None, _) => None,
                 };
-                builder = builder.with_duo_tools(self.config.duo_session.clone(), coach);
+                // An external OpenAI-compatible coach endpoint in duo config
+                // takes precedence over the provider-client coach.
+                if let Some(endpoint) = self
+                    .config
+                    .duo
+                    .as_ref()
+                    .and_then(crate::tools::duo::CoachEndpoint::from_config)
+                {
+                    coach = Some(endpoint.into_execution(
+                        self.config.duo_coach_temperature,
+                        self.config.duo_default_max_tokens,
+                    ));
+                }
+                let player_endpoint = self
+                    .config
+                    .duo
+                    .as_ref()
+                    .and_then(crate::tools::duo::PlayerEndpoint::from_config);
+                builder = builder.with_duo_tools(
+                    self.config.duo_session.clone(),
+                    coach,
+                    player_endpoint,
+                );
             } else {
                 let _ = self
                     .tx_event
