@@ -758,8 +758,8 @@ impl App {
                 if self.allow_shell { base + 3 } else { base }
             }
             AppMode::Duo => {
-                // base(11) + 2 duo tools + subagent(1) = 14
-                let base = 14;
+                // base(11) + 5 duo tools = 16
+                let base = 16;
                 if self.allow_shell { base + 3 } else { base }
             }
         };

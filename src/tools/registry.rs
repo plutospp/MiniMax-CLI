@@ -464,24 +464,16 @@ impl ToolRegistryBuilder {
     }
 
     /// Include Duo tools for dialectical autocoding.
-    ///
-    /// `rlm_session` enables `duo_coach` ground-truth verification contexts;
-    /// pass `None` when RLM is disabled.
     #[must_use]
     pub fn with_duo_tools(
         self,
         session: SharedDuoSession,
-        rlm_session: Option<SharedRlmSession>,
         coach: Option<super::duo::CoachExecution>,
     ) -> Self {
         use super::duo::{DuoAdvanceTool, DuoCoachTool, DuoInitTool, DuoPlayerTool, DuoStatusTool};
         self.with_tool(Arc::new(DuoInitTool::new(session.clone())))
             .with_tool(Arc::new(DuoPlayerTool::new(session.clone())))
-            .with_tool(Arc::new(DuoCoachTool::new(
-                session.clone(),
-                rlm_session,
-                coach,
-            )))
+            .with_tool(Arc::new(DuoCoachTool::new(session.clone(), coach)))
             .with_tool(Arc::new(DuoAdvanceTool::new(session.clone())))
             .with_tool(Arc::new(DuoStatusTool::new(session)))
     }
@@ -750,22 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn duo_mode_registry_exposes_rlm_tools() {
+    fn duo_mode_registry_has_no_rlm_tools() {
         use crate::duo::new_shared_duo_session;
-        use crate::rlm::RlmSession;
-        use std::sync::{Arc, Mutex};
 
         let tmp = tempdir().expect("tempdir");
-        let rlm = Arc::new(Mutex::new(RlmSession::default()));
-        let duo = new_shared_duo_session();
-
         let registry = ToolRegistryBuilder::new()
-            .with_rlm_tools(rlm.clone(), None, "test-model".into())
-            .with_duo_tools(duo, Some(rlm), None)
+            .with_duo_tools(new_shared_duo_session(), None)
             .build(ToolContext::new(tmp.path().to_path_buf()));
 
-        assert!(registry.get("rlm_query").is_some());
-        assert!(registry.get("rlm_load").is_some());
         assert!(registry.get("duo_coach").is_some());
+        assert!(registry.get("rlm_query").is_none());
+        assert!(registry.get("rlm_load").is_none());
     }
 }

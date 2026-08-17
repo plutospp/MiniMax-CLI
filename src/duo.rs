@@ -500,13 +500,24 @@ pub fn generate_player_prompt(state: &DuoState) -> String {
     prompt
 }
 
+/// One file inlined into the coach prompt as verification ground truth.
+#[derive(Debug, Clone, Default)]
+pub struct CoachFile {
+    /// Workspace-relative path the coach cites as `path:line`.
+    pub path: String,
+    /// File text to inline; empty when the file could not be inlined.
+    pub content: String,
+    /// Truncation or failure note rendered above the content.
+    pub note: Option<String>,
+}
+
 /// Generate the coach (validation) prompt for the current state.
 ///
 /// The coach verifies the implementation against requirements and ignores player self-assessment.
-/// When `rlm_contexts` is `Some`, RLM ground-truth verification tools are
-/// available and the prompt includes the verification protocol naming them.
+/// `files` inlines the code under review as ground truth; pass `&[]` when the
+/// caller supplies no files.
 #[must_use]
-pub fn generate_coach_prompt(state: &DuoState, rlm_contexts: Option<&[String]>) -> String {
+pub fn generate_coach_prompt(state: &DuoState, files: &[CoachFile]) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("# Coach Phase - Validation\n\n");
@@ -539,7 +550,7 @@ pub fn generate_coach_prompt(state: &DuoState, rlm_contexts: Option<&[String]>) 
             - [ ] or [x] for each requirement item\n\
             - Note any missing or incorrect implementations\n\
          3. Calculate a COMPLIANCE SCORE (0.0 to 1.0)\n\
-         4. IGNORE any player self-assessment or claims of completion\n\
+            4. IGNORE any player self-assessment or claims of completion\n\
          5. If score >= threshold AND all critical items pass:\n\
             - Output: COACH APPROVED\n\
          6. Otherwise, provide specific feedback:\n\
@@ -549,22 +560,28 @@ pub fn generate_coach_prompt(state: &DuoState, rlm_contexts: Option<&[String]>) 
          Begin validation now.\n",
     );
 
-    if let Some(contexts) = rlm_contexts {
-        let contexts_display = if contexts.is_empty() {
-            "none yet — load them with rlm_load".to_string()
-        } else {
-            contexts.join(", ")
-        };
-        prompt.push_str(&format!(
-            "\n## Ground-Truth Verification (RLM)\n\n\
-             Loaded verification contexts: {contexts_display}\n\n\
-             Verify against the code, not the player's report:\n\
-             - `rlm_status` lists every loaded context.\n\
-             - `rlm_load` with `@path` loads any additional file you need (workspace-relative).\n\
-             - `rlm_exec` runs expressions against a context: `search(\"pattern\")`, `lines(1, 80)`, `line_count()`, `chunk_auto(2000)`.\n\
-             - `rlm_query` answers focused questions about a chunk, section, or line range when a context is too large to read directly.\n\n\
-             Evidence requirement: every checklist item must cite `context_id:line` or a `search` hit that proves the behavior exists. Items without evidence count as failed.\n",
-        ));
+    if !files.is_empty() {
+        prompt.push_str(
+            "\n## Files Under Review (Ground Truth)\n\n\
+             Verify against the contents below, not the player's report.\n\
+             Every checklist item must cite `path:line` from these files.\n\
+             Items with no citation count as failed.\n\
+             If a file you need is absent or truncated here, mark that item unverified \
+             and name the path and line range you still need.\n",
+        );
+        for file in files {
+            prompt.push_str(&format!("\n### {}\n", file.path));
+            if let Some(note) = &file.note {
+                prompt.push_str(&format!("_{note}_\n"));
+            }
+            if !file.content.is_empty() {
+                prompt.push_str("\n```\n");
+                for (idx, line) in file.content.lines().enumerate() {
+                    prompt.push_str(&format!("{:>5} | {line}\n", idx + 1));
+                }
+                prompt.push_str("```\n");
+            }
+        }
     }
 
     prompt
@@ -643,7 +660,7 @@ pub fn create_coach_request(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
 ) -> crate::models::MessageRequest {
-    let mut prompt = generate_coach_prompt(state, None);
+    let mut prompt = generate_coach_prompt(state, &[]);
 
     prompt.push_str("\n## Current Implementation\n\n");
     prompt.push_str("Here is the implementation to validate:\n\n");
@@ -1039,29 +1056,39 @@ mod tests {
     #[test]
     fn test_generate_coach_prompt() {
         let state = DuoState::create(sample_requirements(), None, None, None);
-        let prompt = generate_coach_prompt(&state, None);
+        let prompt = generate_coach_prompt(&state, &[]);
 
         assert!(prompt.contains("Coach Phase"));
         assert!(prompt.contains("COMPLIANCE CHECKLIST"));
         assert!(prompt.contains("COACH APPROVED"));
         assert!(prompt.contains("IGNORE any player self-assessment"));
-        // No RLM section when RLM is unavailable
-        assert!(!prompt.contains("Ground-Truth Verification"));
-        assert!(!prompt.contains("rlm_exec"));
+        assert!(!prompt.contains("Files Under Review"));
+        assert!(!prompt.to_lowercase().contains("rlm"));
     }
 
     #[test]
-    fn coach_prompt_includes_rlm_protocol() {
+    fn coach_prompt_inlines_files_under_review() {
         let state = DuoState::create(sample_requirements(), None, None, None);
-        let prompt = generate_coach_prompt(&state, Some(&["impl.rs".to_string()]));
+        let files = vec![
+            CoachFile {
+                path: "src/lib.rs".to_string(),
+                content: "fn add() {}\n".to_string(),
+                note: None,
+            },
+            CoachFile {
+                path: "src/missing.rs".to_string(),
+                content: String::new(),
+                note: Some("unreadable: No such file or directory (os error 2)".to_string()),
+            },
+        ];
+        let prompt = generate_coach_prompt(&state, &files);
 
-        assert!(prompt.contains("Ground-Truth Verification (RLM)"));
-        assert!(prompt.contains("Loaded verification contexts: impl.rs"));
-        assert!(prompt.contains("rlm_query"));
-        assert!(prompt.contains("Items without evidence count as failed."));
-
-        let empty = generate_coach_prompt(&state, Some(&[]));
-        assert!(empty.contains("none yet — load them with rlm_load"));
+        assert!(prompt.contains("## Files Under Review (Ground Truth)"));
+        assert!(prompt.contains("### src/lib.rs"));
+        assert!(prompt.contains("    1 | fn add() {}"));
+        assert!(prompt.contains("cite `path:line`"));
+        assert!(prompt.contains("_unreadable: No such file or directory (os error 2)_"));
+        assert!(!prompt.to_lowercase().contains("rlm"));
     }
 
     #[test]

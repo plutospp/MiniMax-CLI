@@ -4,14 +4,18 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::duo::{
-    DuoPhase, SharedDuoSession, generate_coach_prompt, generate_player_prompt, session_summary,
+    CoachFile, DuoPhase, SharedDuoSession, generate_coach_prompt, generate_player_prompt,
+    session_summary,
 };
-use crate::rlm::{SharedRlmSession, context_id_from_path, unique_context_id};
-use crate::tools::rlm::normalize_load_path;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_str, required_str,
+    normalize_at_path, optional_str, required_str,
 };
+
+/// Per-file byte cap for coach ground-truth inlining.
+const MAX_COACH_FILE_BYTES: usize = 64 * 1024;
+/// Total byte cap across all files inlined into one coach prompt.
+const MAX_COACH_TOTAL_BYTES: usize = 192 * 1024;
 
 /// Executes the Duo coach turn against a specific model.
 ///
@@ -46,9 +50,7 @@ impl CoachExecution {
     ) -> Self {
         let call: CoachCall = std::sync::Arc::new(move |request| {
             let client = client.clone();
-            Box::pin(async move {
-                client.create_message(request).await
-            })
+            Box::pin(async move { client.create_message(request).await })
         });
         Self {
             model,
@@ -276,59 +278,81 @@ impl ToolSpec for DuoPlayerTool {
 /// configured coach model when one is set.
 pub struct DuoCoachTool {
     session: SharedDuoSession,
-    rlm_session: Option<SharedRlmSession>,
     coach: Option<CoachExecution>,
 }
 
 impl DuoCoachTool {
     #[must_use]
-    pub fn new(
-        session: SharedDuoSession,
-        rlm_session: Option<SharedRlmSession>,
-        coach: Option<CoachExecution>,
-    ) -> Self {
-        Self {
-            session,
-            rlm_session,
-            coach,
-        }
+    pub fn new(session: SharedDuoSession, coach: Option<CoachExecution>) -> Self {
+        Self { session, coach }
     }
 
-    /// Load verification files into the RLM context store, mirroring
-    /// `RlmLoadTool` id/reuse semantics. Returns the loaded context ids.
-    fn preload_verification_contexts(
-        &self,
+    /// Read the files under review into `CoachFile` values, workspace-bounded
+    /// and byte-capped. A path escape is a hard error; an unreadable file is
+    /// reported inline so one bad path cannot kill the coach turn.
+    fn collect_coach_files(
         files: &[&str],
         context: &ToolContext,
-    ) -> Result<Vec<String>, ToolError> {
-        let rlm_session = self.rlm_session.as_ref().ok_or_else(|| {
-            ToolError::invalid_input(
-                "RLM verification is unavailable: enable [features] rlm to preload coach verification contexts",
-            )
-        })?;
+    ) -> Result<Vec<CoachFile>, ToolError> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut collected: Vec<CoachFile> = Vec::new();
+        let mut used = 0usize;
 
-        let mut loaded = Vec::new();
-        let mut session = rlm_session
-            .lock()
-            .map_err(|_| ToolError::execution_failed("Failed to lock RLM session"))?;
         for raw in files {
-            let normalized = normalize_load_path(raw)?;
-            let resolved = context.resolve_path(&normalized)?;
-            let base_id = context_id_from_path(&resolved);
-            let id = if session.contexts.contains_key(&base_id) {
-                base_id
-            } else {
-                unique_context_id(&session, &base_id)
+            let path = normalize_at_path(raw)?;
+            if seen.contains(&path) {
+                continue;
+            }
+            seen.push(path.clone());
+
+            let resolved = context.resolve_path(&path)?;
+            let remaining = MAX_COACH_TOTAL_BYTES.saturating_sub(used);
+            if remaining == 0 {
+                collected.push(CoachFile {
+                    path,
+                    content: String::new(),
+                    note: Some("not inlined: coach file budget exhausted".to_string()),
+                });
+                continue;
+            }
+
+            let text = match std::fs::read_to_string(&resolved) {
+                Ok(text) => text,
+                Err(err) => {
+                    collected.push(CoachFile {
+                        path,
+                        content: String::new(),
+                        note: Some(format!("unreadable: {err}")),
+                    });
+                    continue;
+                }
             };
-            session.load_file(&id, &resolved).map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to load '{}' for verification: {e}",
-                    resolved.display()
-                ))
-            })?;
-            loaded.push(id);
+
+            let cap = MAX_COACH_FILE_BYTES.min(remaining);
+            let total_lines = text.lines().count();
+            let mut content = String::new();
+            let mut shown = 0usize;
+            for line in text.lines() {
+                if content.len() + line.len() + 1 > cap {
+                    break;
+                }
+                content.push_str(line);
+                content.push('\n');
+                shown += 1;
+            }
+            used += content.len();
+
+            let note = (shown < total_lines).then(|| {
+                format!("truncated: showing {shown} of {total_lines} lines ({cap} byte cap)")
+            });
+            collected.push(CoachFile {
+                path,
+                content,
+                note,
+            });
         }
-        Ok(loaded)
+
+        Ok(collected)
     }
 }
 
@@ -339,7 +363,7 @@ impl ToolSpec for DuoCoachTool {
     }
 
     fn description(&self) -> &'static str {
-        "Generate the coach prompt for validation. Must be in Coach phase. Does NOT advance state. Pass files to load them into the RLM context store for ground-truth verification."
+        "Generate the coach prompt for validation and run it when a coach model is configured. Must be in Coach phase. Does NOT advance state. Pass files to inline the code under review as ground truth."
     }
 
     fn input_schema(&self) -> Value {
@@ -349,7 +373,7 @@ impl ToolSpec for DuoCoachTool {
                 "files": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Files under review to load into the RLM context store for verification (prefix with @ for workspace-relative paths)"
+                    "description": "Files under review to inline into the coach prompt as ground truth (workspace-relative; '@' prefix allowed)"
                 }
             }
         })
@@ -376,24 +400,7 @@ impl ToolSpec for DuoCoachTool {
             })
             .unwrap_or_default();
 
-        // Preload (and collect) verification contexts before locking the Duo
-        // session so at most one shared session is held at a time.
-        let mut loaded_ids = Vec::new();
-        let mut context_ids = Vec::new();
-        if let Some(rlm_session) = self.rlm_session.as_ref() {
-            if !files.is_empty() {
-                loaded_ids = self.preload_verification_contexts(&files, context)?;
-            }
-            if let Ok(session) = rlm_session.lock() {
-                context_ids = session.contexts.keys().cloned().collect::<Vec<_>>();
-            }
-        } else if !files.is_empty() {
-            return Err(ToolError::invalid_input(
-                "RLM verification is unavailable: enable [features] rlm to preload coach verification contexts",
-            ));
-        }
-        context_ids.sort();
-        context_ids.dedup();
+        let coach_files = Self::collect_coach_files(&files, context)?;
 
         // Scope the Duo lock: build the prompt, then release the guard before
         // awaiting the coach model so the tool future stays Send.
@@ -414,18 +421,22 @@ impl ToolSpec for DuoCoachTool {
                 )));
             }
 
-            generate_coach_prompt(
-                state,
-                self.rlm_session.as_ref().map(|_| context_ids.as_slice()),
-            )
+            generate_coach_prompt(state, &coach_files)
         };
 
         let mut result = String::new();
-        if !loaded_ids.is_empty() {
+        if !coach_files.is_empty() {
+            let listed = coach_files
+                .iter()
+                .map(|file| match &file.note {
+                    Some(note) => format!("{} ({note})", file.path),
+                    None => file.path.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             result.push_str(&format!(
-                "Loaded {} verification context(s): {}\n\n",
-                loaded_ids.len(),
-                loaded_ids.join(", ")
+                "Inlined {} file(s) for verification: {listed}\n\n",
+                coach_files.len()
             ));
         }
 
@@ -610,7 +621,6 @@ impl ToolSpec for DuoStatusTool {
 mod tests {
     use super::*;
     use crate::duo::new_shared_duo_session;
-    use crate::rlm::RlmSession;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -641,9 +651,10 @@ mod tests {
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
     }
 
+    #[test]
     fn test_duo_coach_tool_schema() {
         let session = new_shared_duo_session();
-        let tool = DuoCoachTool::new(session, None, None);
+        let tool = DuoCoachTool::new(session, None);
 
         assert_eq!(tool.name(), "duo_coach");
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
@@ -687,18 +698,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duo_coach_preloads_verification_contexts() {
+    async fn duo_coach_inlines_files_under_review() {
         let tmp = tempdir().expect("tempdir");
         std::fs::write(
             tmp.path().join("impl.rs"),
-            "fn add(a: i32, b: i32) -> i32 { a + b }",
+            "fn add(a: i32, b: i32) -> i32 { a + b }\n",
         )
         .expect("write");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let duo = coach_phase_session();
-        let rlm = Arc::new(Mutex::new(RlmSession::default()));
 
-        let tool = DuoCoachTool::new(duo, Some(rlm.clone()), None);
+        let tool = DuoCoachTool::new(coach_phase_session(), None);
         let result = tool
             .execute(json!({"files": ["@impl.rs"]}), &ctx)
             .await
@@ -707,25 +716,50 @@ mod tests {
         assert!(
             result
                 .content
-                .contains("Loaded 1 verification context(s): impl.rs")
+                .contains("Inlined 1 file(s) for verification: impl.rs")
         );
-        assert!(result.content.contains("Ground-Truth Verification (RLM)"));
-        assert!(rlm.lock().unwrap().contexts.contains_key("impl.rs"));
+        assert!(result.content.contains("### impl.rs"));
+        assert!(
+            result
+                .content
+                .contains("    1 | fn add(a: i32, b: i32) -> i32 { a + b }")
+        );
+        assert!(!result.content.to_lowercase().contains("rlm"));
     }
 
     #[tokio::test]
-    async fn duo_coach_rejects_files_without_rlm() {
+    async fn duo_coach_missing_file_reports_unreadable_note() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let duo = coach_phase_session();
-
-        let tool = DuoCoachTool::new(duo, None, None);
-        let err = tool
-            .execute(json!({"files": ["@impl.rs"]}), &ctx)
+        let tool = DuoCoachTool::new(coach_phase_session(), None);
+        let result = tool
+            .execute(json!({"files": ["@nope.rs"]}), &ctx)
             .await
-            .expect_err("files without RLM must fail");
+            .expect("missing file should not fail tool execution");
 
-        assert!(err.to_string().contains("RLM verification is unavailable"));
+        assert!(result.content.contains("nope.rs (unreadable:"));
+        assert!(result.content.contains("### nope.rs"));
+        assert!(result.content.contains("_unreadable:"));
+    }
+
+    #[tokio::test]
+    async fn duo_coach_truncates_large_files() {
+        let tmp = tempdir().expect("tempdir");
+        let big_content = (0..4000)
+            .map(|_| "x".repeat(40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(tmp.path().join("big.rs"), &big_content).expect("write");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = DuoCoachTool::new(coach_phase_session(), None);
+        let result = tool
+            .execute(json!({"files": ["@big.rs"]}), &ctx)
+            .await
+            .expect("coach execution");
+
+        assert!(result.content.contains("truncated: showing "));
+        assert!(result.content.contains(" of 4000 lines"));
     }
 
     #[tokio::test]
@@ -734,14 +768,14 @@ mod tests {
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let duo = coach_phase_session();
 
-        let tool = DuoCoachTool::new(duo, None, None);
+        let tool = DuoCoachTool::new(duo, None);
         let result = tool
             .execute(json!({}), &ctx)
             .await
             .expect("coach without files succeeds");
 
         assert!(result.content.contains("=== COACH PROMPT ==="));
-        assert!(!result.content.contains("Ground-Truth Verification"));
+        assert!(!result.content.contains("Files Under Review"));
     }
 
     fn canned_response(text: &str) -> crate::models::MessageResponse {
@@ -780,7 +814,7 @@ mod tests {
         });
         let coach = CoachExecution::with_call("coach-model".to_string(), 0.3, 512, call);
 
-        let tool = DuoCoachTool::new(duo, None, Some(coach));
+        let tool = DuoCoachTool::new(duo, Some(coach));
         let result = tool
             .execute(json!({}), &ctx)
             .await
@@ -814,7 +848,7 @@ mod tests {
             Arc::new(|_request| Box::pin(async { Err(anyhow::anyhow!("network down")) }));
         let coach = CoachExecution::with_call("coach-model".to_string(), 0.3, 512, call);
 
-        let tool = DuoCoachTool::new(duo, None, Some(coach));
+        let tool = DuoCoachTool::new(duo, Some(coach));
         let err = tool
             .execute(json!({}), &ctx)
             .await

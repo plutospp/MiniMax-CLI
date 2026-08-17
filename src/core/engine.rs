@@ -1022,27 +1022,22 @@ impl Engine {
             builder = builder.with_security_tool(self.subagent_manager.clone(), rt.clone());
         }
 
-        let rlm_available = self.config.features.enabled(Feature::Rlm);
-        let rlm_registered = rlm_available && matches!(mode, AppMode::Rlm | AppMode::Duo);
-        if rlm_registered {
-            builder = builder.with_rlm_tools(
-                self.config.rlm_session.clone(),
-                self.minimax_text_client.clone(),
-                self.session.model.clone(),
-            );
-        } else if mode == AppMode::Rlm {
-            let _ = self
-                .tx_event
-                .send(Event::status("RLM tools are disabled by feature flags"))
-                .await;
+        if mode == AppMode::Rlm {
+            if self.config.features.enabled(Feature::Rlm) {
+                builder = builder.with_rlm_tools(
+                    self.config.rlm_session.clone(),
+                    self.minimax_text_client.clone(),
+                    self.session.model.clone(),
+                );
+            } else {
+                let _ = self
+                    .tx_event
+                    .send(Event::status("RLM tools are disabled by feature flags"))
+                    .await;
+            }
         }
         if mode == AppMode::Duo {
             if self.config.features.enabled(Feature::Duo) {
-                let rlm = if rlm_registered {
-                    Some(self.config.rlm_session.clone())
-                } else {
-                    None
-                };
                 let coach = match (
                     self.config.coach_model.clone(),
                     self.minimax_text_client.clone(),
@@ -1064,7 +1059,7 @@ impl Engine {
                     }
                     (None, _) => None,
                 };
-                builder = builder.with_duo_tools(self.config.duo_session.clone(), rlm, coach);
+                builder = builder.with_duo_tools(self.config.duo_session.clone(), coach);
             } else {
                 let _ = self
                     .tx_event

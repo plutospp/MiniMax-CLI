@@ -14,8 +14,8 @@ use crate::rlm::{
     unique_context_id,
 };
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolError, ToolResult, ToolSpec, optional_str,
-    optional_u64, required_str,
+    ApprovalRequirement, ToolCapability, ToolError, ToolResult, ToolSpec, normalize_at_path,
+    optional_str, optional_u64, required_str,
 };
 
 const DEFAULT_QUERY_MAX_TOKENS: u32 = 2048;
@@ -28,31 +28,6 @@ const DEFAULT_AUTO_CHUNK_MAX_CHARS: usize = 20_000;
 const MAX_RECURSION_DEPTH: u32 = 3;
 /// Maximum tool iterations within a single sub-call
 const MAX_TOOL_ITERATIONS: u32 = 10;
-
-pub(crate) fn normalize_load_path(raw: &str) -> Result<String, ToolError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ToolError::invalid_input("Path is required"));
-    }
-
-    if let Some(stripped) = trimmed.strip_prefix('@') {
-        let stripped = stripped.trim();
-        if stripped.is_empty() {
-            return Err(ToolError::invalid_input(
-                "Path is required after '@' prefix",
-            ));
-        }
-        let stripped = stripped.trim_start_matches(['/', '\\']);
-        if stripped.is_empty() {
-            return Err(ToolError::invalid_input(
-                "Path is required after '@' prefix",
-            ));
-        }
-        return Ok(stripped.to_string());
-    }
-
-    Ok(trimmed.to_string())
-}
 
 /// Execute an RLM expression against the current context.
 pub struct RlmExecTool {
@@ -189,7 +164,7 @@ impl ToolSpec for RlmLoadTool {
         context: &crate::tools::spec::ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let path = required_str(&input, "path")?;
-        let normalized = normalize_load_path(path)?;
+        let normalized = normalize_at_path(path)?;
         let context_id = optional_str(&input, "context_id").map(str::to_string);
 
         let resolved = context.resolve_path(&normalized)?;
@@ -1022,23 +997,5 @@ mod tests {
         let lines = extract_lines(&ctx, 1, Some(2));
         assert!(lines.contains("1 a"));
         assert!(lines.contains("2 b"));
-    }
-
-    #[test]
-    fn normalize_load_path_accepts_at_prefix() {
-        let normalized = normalize_load_path("@docs/rlm-paper.txt").expect("normalize");
-        assert_eq!(normalized, "docs/rlm-paper.txt");
-    }
-
-    #[test]
-    fn normalize_load_path_strips_leading_separators() {
-        let normalized = normalize_load_path("@/docs/rlm-paper.txt").expect("normalize");
-        assert_eq!(normalized, "docs/rlm-paper.txt");
-    }
-
-    #[test]
-    fn normalize_load_path_rejects_empty() {
-        assert!(normalize_load_path("@").is_err());
-        assert!(normalize_load_path("   ").is_err());
     }
 }

@@ -348,6 +348,32 @@ impl ToolContext {
     }
 }
 
+/// Strip an optional `@` prefix and leading separators from a model-supplied path.
+pub fn normalize_at_path(raw: &str) -> Result<String, ToolError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::invalid_input("Path is required"));
+    }
+
+    if let Some(stripped) = trimmed.strip_prefix('@') {
+        let stripped = stripped.trim();
+        if stripped.is_empty() {
+            return Err(ToolError::invalid_input(
+                "Path is required after '@' prefix",
+            ));
+        }
+        let stripped = stripped.trim_start_matches(['/', '\\']);
+        if stripped.is_empty() {
+            return Err(ToolError::invalid_input(
+                "Path is required after '@' prefix",
+            ));
+        }
+        return Ok(stripped.to_string());
+    }
+
+    Ok(trimmed.to_string())
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut prefix: Option<std::ffi::OsString> = None;
     let mut is_root = false;
@@ -636,5 +662,23 @@ mod tests {
     fn test_approval_requirement_default() {
         let level = ApprovalRequirement::default();
         assert_eq!(level, ApprovalRequirement::Auto);
+    }
+
+    #[test]
+    fn normalize_at_path_accepts_at_prefix() {
+        let normalized = normalize_at_path("@docs/rlm-paper.txt").expect("normalize");
+        assert_eq!(normalized, "docs/rlm-paper.txt");
+    }
+
+    #[test]
+    fn normalize_at_path_strips_leading_separators() {
+        let normalized = normalize_at_path("@/docs/rlm-paper.txt").expect("normalize");
+        assert_eq!(normalized, "docs/rlm-paper.txt");
+    }
+
+    #[test]
+    fn normalize_at_path_rejects_empty() {
+        assert!(normalize_at_path("@").is_err());
+        assert!(normalize_at_path("   ").is_err());
     }
 }
