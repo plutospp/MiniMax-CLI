@@ -347,6 +347,22 @@ fn convert_message(msg: &Message) -> Result<Vec<Value>> {
     }
 }
 
+/// Extract the reasoning/thinking text from an OpenAI-compatible `message` or
+/// streamed `delta` object. OpenRouter-style routers emit `reasoning`, while
+/// DeepSeek/Kimi emit `reasoning_content`. Only the string form is read.
+fn reasoning_text(value: &Value) -> Option<&str> {
+    value
+        .get("reasoning")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            value
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
+}
+
 /// Map a non-stream OpenAI response into Anthropic [`MessageResponse`].
 pub fn from_openai_response(value: &Value, fallback_model: &str) -> Result<MessageResponse> {
     let id = value
@@ -371,6 +387,11 @@ pub fn from_openai_response(value: &Value, fallback_model: &str) -> Result<Messa
         .context("OpenAI choice missing message")?;
 
     let mut content = Vec::new();
+    if let Some(reasoning) = reasoning_text(message) {
+        content.push(ContentBlock::Thinking {
+            thinking: reasoning.to_string(),
+        });
+    }
     if let Some(text) = message.get("content").and_then(|v| v.as_str())
         && !text.is_empty()
     {
@@ -449,6 +470,7 @@ fn openai_sse_to_stream_events(
         let mut started = false;
         let mut next_index: u32 = 0;
         let mut text_index: Option<u32> = None;
+        let mut reasoning_index: Option<u32> = None;
         let mut tool_builders: HashMap<u32, ToolCallBuilder> = HashMap::new();
         let mut tool_block_index: HashMap<u32, u32> = HashMap::new();
         let mut finish_reason: Option<String> = None;
@@ -474,6 +496,9 @@ fn openai_sse_to_stream_events(
                     };
                     if data == "[DONE]" {
                         if let Some(idx) = text_index.take() {
+                            yield StreamEvent::ContentBlockStop { index: idx };
+                        }
+                        if let Some(idx) = reasoning_index.take() {
                             yield StreamEvent::ContentBlockStop { index: idx };
                         }
                         let mut keys: Vec<u32> = tool_builders.keys().copied().collect();
@@ -598,9 +623,34 @@ fn openai_sse_to_stream_events(
                         continue;
                     };
 
+                    if let Some(reasoning) = reasoning_text(delta) {
+                        if reasoning_index.is_none() {
+                            let idx = next_index;
+                            next_index += 1;
+                            reasoning_index = Some(idx);
+                            yield StreamEvent::ContentBlockStart {
+                                index: idx,
+                                content_block: ContentBlockStart::Thinking {
+                                    thinking: String::new(),
+                                },
+                            };
+                        }
+                        if let Some(idx) = reasoning_index {
+                            yield StreamEvent::ContentBlockDelta {
+                                index: idx,
+                                delta: Delta::ThinkingDelta {
+                                    thinking: reasoning.to_string(),
+                                },
+                            };
+                        }
+                    }
+
                     if let Some(content) = delta.get("content").and_then(|v| v.as_str())
                         && !content.is_empty()
                     {
+                        if let Some(idx) = reasoning_index.take() {
+                            yield StreamEvent::ContentBlockStop { index: idx };
+                        }
                         if text_index.is_none() {
                             let idx = next_index;
                             next_index += 1;
@@ -625,6 +675,11 @@ fn openai_sse_to_stream_events(
                     if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                         if text_index.is_some() && !tool_calls.is_empty()
                             && let Some(idx) = text_index.take()
+                        {
+                            yield StreamEvent::ContentBlockStop { index: idx };
+                        }
+                        if reasoning_index.is_some() && !tool_calls.is_empty()
+                            && let Some(idx) = reasoning_index.take()
                         {
                             yield StreamEvent::ContentBlockStop { index: idx };
                         }
@@ -805,5 +860,104 @@ mod tests {
         assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
         assert!(matches!(resp.content[0], ContentBlock::ToolUse { .. }));
         assert_eq!(resp.usage.input_tokens, 10);
+    }
+
+    #[test]
+    fn maps_openai_reasoning_non_streaming() {
+        let value = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "step by step thought",
+                    "content": "the answer"
+                }
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+        });
+        let resp = from_openai_response(&value, "fallback").unwrap();
+        assert!(matches!(
+            resp.content.as_slice(),
+            [ContentBlock::Thinking { .. }, ContentBlock::Text { .. }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn streams_openai_reasoning_to_thinking_delta() {
+        let chunks = vec![
+            Ok::<_, reqwest::Error>(bytes::Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking...\"}}]}\n\n",
+            )),
+            Ok::<_, reqwest::Error>(bytes::Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+            )),
+            Ok::<_, reqwest::Error>(bytes::Bytes::from_static(b"data: [DONE]\n\n")),
+        ];
+        let stream = futures_util::stream::iter(chunks);
+        let mut events = Vec::new();
+        let mut stream = Box::pin(openai_sse_to_stream_events(stream, "m".into()));
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::ContentBlockDelta {
+                delta: Delta::ThinkingDelta { thinking },
+                ..
+            } if thinking == "thinking...")));
+        let thinking_delta_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    StreamEvent::ContentBlockDelta {
+                        delta: Delta::ThinkingDelta { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("thinking delta missing");
+        let thinking_stop_pos = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ContentBlockStop { .. }))
+            .expect("thinking stop missing");
+        let text_start_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    StreamEvent::ContentBlockStart {
+                        content_block: ContentBlockStart::Text { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("text start missing");
+        assert!(thinking_delta_pos < thinking_stop_pos);
+        assert!(thinking_stop_pos < text_start_pos);
+    }
+
+    #[test]
+    fn maps_openai_reasoning_content_fallback() {
+        let value = json!({
+            "id": "chatcmpl-1",
+            "model": "deepseek-chat",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "deepseek style",
+                    "content": "answer"
+                }
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+        });
+        let resp = from_openai_response(&value, "fallback").unwrap();
+        assert!(matches!(
+            resp.content.as_slice(),
+            [ContentBlock::Thinking { .. }, ContentBlock::Text { .. }]
+        ));
     }
 }
