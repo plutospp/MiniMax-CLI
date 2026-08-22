@@ -53,3 +53,6 @@ NEXT_SESSION.md
 
 .codex/
 docs/rlm-paper.txt
+
+# Local config with live API keys
+test_config.toml
