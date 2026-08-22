@@ -240,6 +240,14 @@ pub fn login(app: &mut App, arg: Option<&str>) -> CommandResult {
     )
 }
 
+/// Add a new LLM provider definition via an interactive TUI form
+pub fn add_provider(_app: &mut App) -> CommandResult {
+    CommandResult::with_message_and_action(
+        "Define a new LLM provider".to_string(),
+        AppAction::RequestAddProvider,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +322,12 @@ mod tests {
             result.action,
             Some(AppAction::RequestLogin { ref provider }) if provider == "deepseek"
         ));
+    }
+
+    #[test]
+    fn test_add_provider_command() {
+        let mut app = create_test_app();
+        let res = add_provider(&mut app);
+        assert!(matches!(res.action, Some(AppAction::RequestAddProvider)));
     }
 }

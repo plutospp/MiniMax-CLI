@@ -95,6 +95,11 @@ impl ModalView for SecretInputView {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ViewAction {
+        self.input.push_str(text);
+        ViewAction::None
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let popup_width = (area.width * 3 / 5).clamp(50, 70);
         let popup_height = 5u16;

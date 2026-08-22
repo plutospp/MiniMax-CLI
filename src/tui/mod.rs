@@ -13,6 +13,7 @@ pub mod history_picker;
 pub mod model_picker;
 pub mod markdown;
 pub mod paste_burst;
+pub mod provider_form;
 pub mod provider_picker;
 pub mod scrolling;
 pub mod search_view;

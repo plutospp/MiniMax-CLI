@@ -8,6 +8,7 @@ use crate::tui::history_picker::HistoryPickerResult;
 use crate::tui::model_picker::ModelPickerResult;
 use crate::tui::provider_picker::ProviderPickerResult;
 use crate::tui::session_picker::SessionPickerResult;
+use crate::tui::provider_form::ProviderFormResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
@@ -16,6 +17,7 @@ pub enum ModalKind {
     SessionPicker,
     ModelPicker,
     ProviderPicker,
+    ProviderForm,
     HistoryPicker,
     Search,
     SecretInput,
@@ -47,6 +49,9 @@ pub enum ViewEvent {
     SecretInputResult {
         result: crate::tui::secret_input::SecretInputResult,
     },
+    ProviderAdded {
+        result: ProviderFormResult,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +64,9 @@ pub enum ViewAction {
 pub trait ModalView {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
+    fn handle_paste(&mut self, _text: &str) -> ViewAction {
+        ViewAction::None
+    }
     fn render(&self, area: Rect, buf: &mut Buffer);
     fn tick(&mut self) -> ViewAction {
         ViewAction::None
@@ -134,6 +142,15 @@ impl ViewStack {
             .views
             .last_mut()
             .map(|view| view.handle_key(key))
+            .unwrap_or(ViewAction::None);
+        self.apply_action(action)
+    }
+
+    pub fn handle_paste(&mut self, text: &str) -> Vec<ViewEvent> {
+        let action = self
+            .views
+            .last_mut()
+            .map(|view| view.handle_paste(text))
             .unwrap_or(ViewAction::None);
         self.apply_action(action)
     }

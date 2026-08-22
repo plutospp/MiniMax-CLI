@@ -124,6 +124,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/provider [name]",
     },
     CommandInfo {
+        name: "add-provider",
+        aliases: &["addprovider"],
+        description: "Add a new LLM provider (name, protocol, URL, key, model)",
+        usage: "/add-provider",
+    },
+    CommandInfo {
         name: "login",
         aliases: &[],
         description: "Enter API key for a provider (masked input)",
@@ -449,6 +455,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "trust" => config::trust(app),
         "logout" => config::logout(app),
         "login" => config::login(app, arg),
+        "add-provider" | "addprovider" => config::add_provider(app),
         "reload" => reload::reload(app),
         "setup" => setup::setup(app),
 

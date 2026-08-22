@@ -1315,7 +1315,12 @@ fn is_api_key_assignment(line: &str) -> bool {
 
 /// Escape a value for a TOML basic string.
 fn escape_toml_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 /// Save a provider API key under `[providers.<name>]` in the config file.
@@ -1327,8 +1332,9 @@ pub fn save_provider_api_key(provider: &str, api_key: &str) -> Result<PathBuf> {
     let name = provider.trim();
     anyhow::ensure!(!name.is_empty(), "Provider name cannot be empty");
     anyhow::ensure!(
-        !name.contains('.') && !name.contains(']') && !name.contains('['),
-        "Invalid provider name '{name}'"
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "Invalid provider name '{name}'. Use letters, digits, '-', or '_'."
     );
     if name == DEFAULT_PROVIDER_NAME {
         return save_api_key(api_key.trim());
@@ -1376,6 +1382,175 @@ pub fn save_provider_api_key(provider: &str, api_key: &str) -> Result<PathBuf> {
             }
             lines.push(section);
             lines.push(assignment);
+        }
+    }
+
+    let mut content = lines.join("\n");
+    content.push('\n');
+    fs::write(&config_path, content)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+
+    Ok(config_path)
+}
+
+fn is_provider_field_assignment(line: &str, field: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with(field) {
+        return false;
+    }
+    let rest = trimmed[field.len()..].trim_start();
+    rest.starts_with('=')
+}
+
+/// Save or update a provider entry under `[providers.<name>]` in the config file.
+///
+/// Creates the config file or provider section as needed, writes `api`, `url`,
+/// and optional `api_key` and `default_model` entries, and preserves existing
+/// formatting and comments.
+pub fn save_provider(
+    name: &str,
+    api: ProviderApi,
+    url: &str,
+    api_key: &str,
+    default_model: &str,
+) -> Result<PathBuf> {
+    let name = name.trim();
+    anyhow::ensure!(!name.is_empty(), "Provider name cannot be empty");
+    anyhow::ensure!(
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "Invalid provider name '{name}'. Use letters, digits, '-', or '_'."
+    );
+    if name == DEFAULT_PROVIDER_NAME {
+        anyhow::bail!("Cannot add default provider 'minimax' via /add-provider. Use /login or configure top-level api_key.");
+    }
+
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let existing = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+
+    let section = format!("[providers.{name}]");
+
+    // Find the range of the existing section if present.
+    let mut section_start: Option<usize> = None;
+    let mut section_end: Option<usize> = None;
+    let mut in_section = false;
+
+    let raw_lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    for (index, line) in raw_lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_section {
+                section_end = Some(index);
+                break;
+            }
+            if trimmed == section {
+                in_section = true;
+                section_start = Some(index);
+            }
+        }
+    }
+    if in_section && section_end.is_none() {
+        section_end = Some(raw_lines.len());
+    }
+
+    let mut lines = raw_lines;
+
+    let desired_api = format!("api = \"{}\"", api.as_str());
+    let desired_url = format!("url = \"{}\"", escape_toml_string(url.trim()));
+    let desired_api_key = if !api_key.trim().is_empty() {
+        Some(format!("api_key = \"{}\"", escape_toml_string(api_key.trim())))
+    } else {
+        None
+    };
+    let desired_default_model = if !default_model.trim().is_empty() {
+        Some(format!("default_model = \"{}\"", escape_toml_string(default_model.trim())))
+    } else {
+        None
+    };
+
+    match (section_start, section_end) {
+        (Some(start), Some(end)) => {
+            // Section exists: update existing field lines or append missing fields within section
+            let mut api_idx = None;
+            let mut url_idx = None;
+            let mut api_key_idx = None;
+            let mut default_model_idx = None;
+
+            for idx in (start + 1)..end {
+                let trimmed = lines[idx].trim();
+                if is_provider_field_assignment(trimmed, "api") {
+                    api_idx = Some(idx);
+                } else if is_provider_field_assignment(trimmed, "url") {
+                    url_idx = Some(idx);
+                } else if is_provider_field_assignment(trimmed, "api_key") {
+                    api_key_idx = Some(idx);
+                } else if is_provider_field_assignment(trimmed, "default_model") {
+                    default_model_idx = Some(idx);
+                }
+            }
+
+            // Replace or remove in reverse index order if modifying, or record fields to insert
+            // Simple approach: update lines in-place where found, remove unwanted key/model lines, insert missing
+            if let Some(idx) = api_idx {
+                lines[idx] = desired_api.clone();
+            }
+            if let Some(idx) = url_idx {
+                lines[idx] = desired_url.clone();
+            }
+            if let Some(idx) = api_key_idx {
+                if let Some(ref val) = desired_api_key {
+                    lines[idx] = val.clone();
+                }
+            }
+            if let Some(idx) = default_model_idx {
+                if let Some(ref val) = desired_default_model {
+                    lines[idx] = val.clone();
+                }
+            }
+
+            // Insert missing fields right after header
+            let mut insert_pos = start + 1;
+            if api_idx.is_none() {
+                lines.insert(insert_pos, desired_api);
+                insert_pos += 1;
+            }
+            if url_idx.is_none() {
+                lines.insert(insert_pos, desired_url);
+                insert_pos += 1;
+            }
+            if api_key_idx.is_none() {
+                if let Some(val) = desired_api_key {
+                    lines.insert(insert_pos, val);
+                    insert_pos += 1;
+                }
+            }
+            if default_model_idx.is_none() {
+                if let Some(val) = desired_default_model {
+                    lines.insert(insert_pos, val);
+                }
+            }
+        }
+        _ => {
+            // Section does not exist: append fresh section
+            if !lines.is_empty() && !lines.last().is_some_and(String::is_empty) {
+                lines.push(String::new());
+            }
+            lines.push(section);
+            lines.push(desired_api);
+            lines.push(desired_url);
+            if let Some(val) = desired_api_key {
+                lines.push(val);
+            }
+            if let Some(val) = desired_default_model {
+                lines.push(val);
+            }
         }
     }
 
@@ -1907,5 +2082,70 @@ mod tests {
             openai_models_url("https://api.deepseek.com/v1"),
             "https://api.deepseek.com/v1/models"
         );
+    }
+
+    #[test]
+    fn test_save_provider_fresh_config() -> Result<()> {
+        let _lock = env_lock().lock();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root =
+            env::temp_dir().join(format!("minimax-save-provider-{nanos}"));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".minimax").join("config.toml");
+
+        // Save openrouter without api_key and default_model
+        let saved = save_provider(
+            "openrouter",
+            ProviderApi::OpenAi,
+            "https://openrouter.ai/api/v1",
+            "",
+            "",
+        )?;
+        assert_eq!(saved, config_path);
+
+        let contents = fs::read_to_string(&config_path)?;
+        assert!(
+            contents.contains("[providers.openrouter]"),
+            "missing section header:\n{contents}"
+        );
+        assert!(
+            contents.contains("api = \"openai\""),
+            "missing api line:\n{contents}"
+        );
+        assert!(
+            contents.contains("url = \"https://openrouter.ai/api/v1\""),
+            "missing url line:\n{contents}"
+        );
+        assert!(
+            !contents.contains("api_key"),
+            "api_key should not be present:\n{contents}"
+        );
+        assert!(
+            !contents.contains("default_model"),
+            "default_model should not be present:\n{contents}"
+        );
+
+        // Error on minimax name
+        let err = save_provider("minimax", ProviderApi::OpenAi, "https://example.com", "", "").unwrap_err();
+        assert!(err.to_string().contains("Cannot add default provider 'minimax'"));
+        // Error on name with a newline (section-header injection)
+        let err = save_provider("foo\nbar", ProviderApi::OpenAi, "https://example.com", "", "").unwrap_err();
+        assert!(err.to_string().contains("Invalid provider name"));
+
+        // Round-trips through Config::load
+        let config = Config::load(Some(config_path), None)?;
+        let providers = config.providers.expect("providers table");
+        let entry = providers.get("openrouter").expect("openrouter entry");
+        assert_eq!(entry.api, Some(ProviderApi::OpenAi));
+        assert_eq!(entry.url.as_deref(), Some("https://openrouter.ai/api/v1"));
+        assert_eq!(entry.api_key, None);
+
+        fs::remove_dir_all(&temp_root).ok();
+        Ok(())
     }
 }

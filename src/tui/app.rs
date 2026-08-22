@@ -1357,6 +1357,8 @@ pub enum AppAction {
     RequestLogin {
         provider: String,
     },
+    /// Open the provider creation form modal
+    RequestAddProvider,
     /// Open the command history picker modal
     OpenHistoryPicker,
     /// Reload configuration from disk

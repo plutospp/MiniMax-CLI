@@ -644,6 +644,9 @@ async fn run_event_loop(
                 if app.onboarding == OnboardingState::EnteringKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
+                } else if !app.view_stack.is_empty() {
+                    let events = app.view_stack.handle_paste(text);
+                    handle_view_events(app, &engine_handle, config, events).await;
                 } else {
                     // Paste into main input
                     if let Some(pending) = app.paste_burst.flush_before_modified_input() {
@@ -1234,6 +1237,11 @@ async fn run_event_loop(
                                             crate::tui::secret_input::SecretInputView::new(
                                                 provider,
                                             ),
+                                        );
+                                    }
+                                    AppAction::RequestAddProvider => {
+                                        app.view_stack.push(
+                                            crate::tui::provider_form::ProviderFormView::new(),
                                         );
                                     }
                                     AppAction::SetCoachModel { model } => {
@@ -2641,6 +2649,43 @@ async fn handle_view_events(
                     }),
                 }
             }
+            ViewEvent::ProviderAdded { result } => match result {
+                crate::tui::provider_form::ProviderFormResult::Submitted {
+                    name,
+                    api,
+                    url,
+                    api_key,
+                    default_model,
+                } => {
+                    match crate::config::save_provider(
+                        &name,
+                        api,
+                        &url,
+                        &api_key,
+                        &default_model,
+                    ) {
+                        Ok(path) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!(
+                                    "Provider '{name}' saved to {}",
+                                    path.display()
+                                ),
+                            });
+                            if let Err(err) = reload_active_client(app, engine_handle).await {
+                                app.add_message(HistoryCell::System {
+                                    content: format!("Reload client warning: {err}"),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Failed to save provider: {e}"),
+                            });
+                        }
+                    }
+                }
+                crate::tui::provider_form::ProviderFormResult::Cancelled => {}
+            },
             ViewEvent::SearchResultSelected { result } => {
                 // Scroll to the selected search result
                 app.transcript_scroll = super::scrolling::TranscriptScroll::Scrolled {
@@ -2664,6 +2709,10 @@ fn pause_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
 }
 
 fn provider_picker_items(config: &Config) -> Vec<crate::tui::provider_picker::ProviderPickItem> {
+    // Reload from disk so providers added this session (e.g. /add-provider)
+    // are visible without a restart; fall back to the startup config on error.
+    let owned = Config::load(None, None).ok();
+    let config = owned.as_ref().unwrap_or(config);
     let names = config.provider_names();
     let mut items = Vec::new();
     for name in names {
@@ -2693,7 +2742,10 @@ async fn switch_provider(
     base_config: &Config,
     name: &str,
 ) -> Result<String> {
-    let mut cfg = base_config.clone();
+    // Reload from disk so a provider added this session (e.g. /add-provider)
+    // resolves; fall back to the startup config on error.
+    let owned = Config::load(None, None).ok();
+    let mut cfg = owned.unwrap_or_else(|| base_config.clone());
     let active = cfg.set_active_provider(name)?;
     let client = crate::client::TextClient::from_provider(&active, cfg.retry_policy())?;
     let old_provider = app.provider.clone();
