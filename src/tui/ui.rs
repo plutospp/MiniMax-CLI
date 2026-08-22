@@ -422,7 +422,7 @@ async fn run_event_loop(
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
                     }
-                    EngineEvent::TurnComplete { usage, .. } => {
+                    EngineEvent::TurnComplete { usage, error, .. } => {
                         app.is_loading = false;
                         app.turn_started_at = None;
                         let turn_tokens = usage.input_tokens + usage.output_tokens;
@@ -474,6 +474,14 @@ async fn run_event_loop(
                             } else {
                                 app.current_session_id = Some(session.metadata.id.clone());
                             }
+                        }
+
+                        if let Some(err_msg) = error {
+                            app.suggestion_engine.check_last_error(&err_msg);
+                            app.add_message(HistoryCell::Error {
+                                message: err_msg,
+                                suggestion: None,
+                            });
                         }
 
                         if queued_to_send.is_none() {

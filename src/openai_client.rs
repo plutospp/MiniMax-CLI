@@ -449,6 +449,7 @@ fn openai_sse_to_stream_events(
         let mut started = false;
         let mut next_index: u32 = 0;
         let mut text_index: Option<u32> = None;
+        let mut thinking_index: Option<u32> = None;
         let mut tool_builders: HashMap<u32, ToolCallBuilder> = HashMap::new();
         let mut tool_block_index: HashMap<u32, u32> = HashMap::new();
         let mut finish_reason: Option<String> = None;
@@ -474,6 +475,9 @@ fn openai_sse_to_stream_events(
                     };
                     if data == "[DONE]" {
                         if let Some(idx) = text_index.take() {
+                            yield StreamEvent::ContentBlockStop { index: idx };
+                        }
+                        if let Some(idx) = thinking_index.take() {
                             yield StreamEvent::ContentBlockStop { index: idx };
                         }
                         let mut keys: Vec<u32> = tool_builders.keys().copied().collect();
@@ -598,6 +602,30 @@ fn openai_sse_to_stream_events(
                         continue;
                     };
 
+                    if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str())
+                        && !reasoning.is_empty()
+                    {
+                        if thinking_index.is_none() {
+                            let idx = next_index;
+                            next_index += 1;
+                            thinking_index = Some(idx);
+                            yield StreamEvent::ContentBlockStart {
+                                index: idx,
+                                content_block: ContentBlockStart::Thinking {
+                                    thinking: String::new(),
+                                },
+                            };
+                        }
+                        if let Some(idx) = thinking_index {
+                            yield StreamEvent::ContentBlockDelta {
+                                index: idx,
+                                delta: Delta::ThinkingDelta {
+                                    thinking: reasoning.to_string(),
+                                },
+                            };
+                        }
+                    }
+
                     if let Some(content) = delta.get("content").and_then(|v| v.as_str())
                         && !content.is_empty()
                     {
@@ -623,10 +651,13 @@ fn openai_sse_to_stream_events(
                     }
 
                     if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                        if text_index.is_some() && !tool_calls.is_empty()
-                            && let Some(idx) = text_index.take()
-                        {
-                            yield StreamEvent::ContentBlockStop { index: idx };
+                        if !tool_calls.is_empty() {
+                            if let Some(idx) = text_index.take() {
+                                yield StreamEvent::ContentBlockStop { index: idx };
+                            }
+                            if let Some(idx) = thinking_index.take() {
+                                yield StreamEvent::ContentBlockStop { index: idx };
+                            }
                         }
 
                         for call in tool_calls {
