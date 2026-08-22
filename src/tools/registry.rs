@@ -122,7 +122,7 @@ impl ToolRegistry {
         self.tools
             .values()
             .map(|tool| Tool {
-                name: tool.name().to_string(),
+                name: crate::tools::wire_tool_name(tool.name()).to_string(),
                 description: tool.description().to_string(),
                 input_schema: tool.input_schema(),
                 cache_control: None,

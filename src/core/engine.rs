@@ -1232,6 +1232,7 @@ impl Engine {
         registry: Option<&crate::tools::ToolRegistry>,
         mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     ) -> Result<ToolResult, ToolError> {
+        let tool_name = crate::tools::internal_tool_name(&tool_name).to_string();
         let _guard = if supports_parallel {
             ToolExecGuard::Read(lock.read().await)
         } else {
@@ -1281,7 +1282,7 @@ impl Engine {
                     .ok_or_else(|| {
                         ToolError::invalid_input("tool_uses[].recipient_name is required")
                     })?;
-                let mapped = raw_name.strip_prefix("functions.").unwrap_or(raw_name);
+                let mapped = crate::tools::internal_tool_name(raw_name.strip_prefix("functions.").unwrap_or(raw_name));
                 if mapped == "multi_tool_use.parallel" {
                     outputs.push(json!({
                         "recipient_name": raw_name,
@@ -1821,6 +1822,7 @@ impl Engine {
             for (index, tool) in tool_uses.iter().enumerate() {
                 let tool_id = tool.id.clone();
                 let tool_name = tool.name.clone();
+                let lookup_name = crate::tools::internal_tool_name(&tool_name);
                 let tool_input = tool.input.clone();
                 crate::logging::info(format!(
                     "Executing tool '{}' with input: {:?}",
@@ -1834,9 +1836,9 @@ impl Engine {
 
                 let mut approval_required = false;
                 let mut approval_description = "Tool execution requires approval".to_string();
-                let mut supports_parallel = McpPool::is_mcp_tool(&tool_name);
+                let mut supports_parallel = McpPool::is_mcp_tool(&lookup_name);
                 if let Some(registry) = tool_registry
-                    && let Some(spec) = registry.get(&tool_name)
+                    && let Some(spec) = registry.get(&lookup_name)
                 {
                     approval_required = spec.approval_requirement() != ApprovalRequirement::Auto;
                     approval_description = spec.description().to_string();

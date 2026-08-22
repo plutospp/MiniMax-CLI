@@ -2,6 +2,26 @@
 
 #![allow(dead_code, unused_imports)]
 
+/// Map an internal tool name to its wire (API) form. Two tools use Codex-style
+/// dotted names that violate the OpenAI/Anthropic tool-name schema
+/// `^[a-zA-Z0-9_-]{1,64}$`, so they are collapsed to underscores on the wire.
+pub fn wire_tool_name(name: &str) -> &str {
+    match name {
+        "web.run" => "web_run",
+        "multi_tool_use.parallel" => "multi_tool_use_parallel",
+        _ => name,
+    }
+}
+
+/// Map a wire (API) tool name back to its internal handler identity.
+pub fn internal_tool_name(name: &str) -> &str {
+    match name {
+        "web_run" => "web.run",
+        "multi_tool_use_parallel" => "multi_tool_use.parallel",
+        _ => name,
+    }
+}
+
 // === Modules ===
 
 pub mod artifact;
@@ -142,5 +162,31 @@ mod runtime_tool_schema_tests {
         assert_schema_has_properties(SportsTool.input_schema());
         assert_schema_has_properties(TimeTool.input_schema());
         assert_schema_has_properties(CalculatorTool.input_schema());
+    }
+}
+
+#[cfg(test)]
+mod name_mapping_tests {
+    use super::{internal_tool_name, wire_tool_name};
+
+    #[test]
+    fn wire_maps_dotted_names() {
+        assert_eq!(wire_tool_name("web.run"), "web_run");
+        assert_eq!(wire_tool_name("multi_tool_use.parallel"), "multi_tool_use_parallel");
+        assert_eq!(wire_tool_name("read_file"), "read_file");
+    }
+
+    #[test]
+    fn internal_maps_underscore_names() {
+        assert_eq!(internal_tool_name("web_run"), "web.run");
+        assert_eq!(internal_tool_name("multi_tool_use_parallel"), "multi_tool_use.parallel");
+        assert_eq!(internal_tool_name("read_file"), "read_file");
+    }
+
+    #[test]
+    fn round_trips() {
+        for name in ["web.run", "multi_tool_use.parallel"] {
+            assert_eq!(internal_tool_name(wire_tool_name(name)), name);
+        }
     }
 }
