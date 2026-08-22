@@ -12,6 +12,7 @@ use ratatui::{
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Maximum number of matches to display
 const MAX_VISIBLE_MATCHES: usize = 10;
@@ -383,11 +384,24 @@ fn fuzzy_match(haystack: &str, needle: &str) -> Option<(i64, Vec<usize>)> {
     }
 }
 
-/// Index all files in the workspace
+/// Index files in the workspace for the `@` fuzzy picker.
+///
+/// Bounded on four axes so that launching from a huge directory (e.g. the
+/// user home dir on Windows) cannot stall TUI startup: a wall-clock budget,
+/// a file-count cap, a directory-visit cap, and a depth cap.
 fn index_paths(workspace: &Path) -> Vec<PathBuf> {
+    const MAX_ENTRIES: usize = 10_000;
+    const MAX_DIRS: usize = 2_000;
+    const MAX_DEPTH: usize = 12;
+    // Hard wall-clock budget: whatever isn't indexed in this window is skipped.
+    // This is the only bound that holds regardless of filesystem shape
+    // (network mounts, OneDrive hydration, deep trees, huge flat dirs).
+    let deadline = Instant::now() + Duration::from_millis(500);
+
     let mut paths = Vec::new();
+    let mut dirs_visited = 0usize;
     let mut queue = VecDeque::new();
-    queue.push_back(workspace.to_path_buf());
+    queue.push_back((workspace.to_path_buf(), 0usize));
 
     // Skip these directories
     let skip_dirs: &[&str] = &[
@@ -399,17 +413,29 @@ fn index_paths(workspace: &Path) -> Vec<PathBuf> {
         "dist",
         "build",
         ".minimax",
+        "AppData",
     ];
 
-    while let Some(dir) = queue.pop_front() {
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth >= MAX_DEPTH
+            || paths.len() >= MAX_ENTRIES
+            || dirs_visited >= MAX_DIRS
+            || Instant::now() >= deadline
+        {
+            break;
+        }
+        dirs_visited += 1;
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
+                if paths.len() >= MAX_ENTRIES || Instant::now() >= deadline {
+                    break;
+                }
                 let path = entry.path();
                 let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 if path.is_dir() {
                     if !skip_dirs.contains(&file_name) && !file_name.starts_with('.') {
-                        queue.push_back(path);
+                        queue.push_back((path, depth + 1));
                     }
                 } else {
                     // Store relative path from workspace
@@ -517,5 +543,48 @@ mod tests {
         assert_eq!(extract_query("Hello @", 7), Some("".to_string()));
         assert_eq!(extract_query("Check @file", 10), Some("fil".to_string()));
         assert_eq!(extract_query("Hello world", 11), None);
+    }
+
+    #[test]
+    fn test_index_paths_respects_bounds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // A directory that must be skipped.
+        let appdata = root.join("AppData");
+        std::fs::create_dir_all(&appdata).unwrap();
+        std::fs::write(appdata.join("secret.txt"), "x").unwrap();
+
+        // A chain deeper than MAX_DEPTH (14 > 12).
+        let mut deep = root.to_path_buf();
+        for i in 0..14 {
+            deep = deep.join(format!("d{i}"));
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::write(deep.join(format!("f{i}.txt")), "x").unwrap();
+        }
+
+        let paths = index_paths(root);
+
+        // AppData must be skipped.
+        assert!(
+            !paths.iter().any(|p| p.to_string_lossy().contains("AppData")),
+            "AppData should be excluded: {paths:?}"
+        );
+
+        // Files at or beyond MAX_DEPTH must be skipped.
+        // The shallow files (d0..d11) are indexed; d12+ are not.
+        let indexed_names: Vec<String> =
+            paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        for trailing in ["d12", "d13"] {
+            assert!(
+                !indexed_names.iter().any(|p| p.contains(trailing)),
+                "deep dir {trailing} should be beyond MAX_DEPTH: {indexed_names:?}"
+            );
+        }
+        // Positive: shallow files must still be indexed (fails on empty result).
+        assert!(
+            indexed_names.iter().any(|p| p.contains("f0.txt")),
+            "shallow file f0.txt should be indexed: {indexed_names:?}"
+        );
     }
 }
