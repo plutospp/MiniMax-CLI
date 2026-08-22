@@ -122,6 +122,8 @@ These override config values:
   - `[retry].initial_delay` (float seconds, default `1.0`)
   - `[retry].max_delay` (float seconds, default `60.0`)
   - `[retry].exponential_base` (float, default `2.0`)
+  - `[retry].request_timeout` (float seconds, default `0` = no per-request timeout)
+  - `[retry].total_timeout` (float seconds, default `0` = no total timeout across retries)
 - `compaction.*` (optional): automatic/manual context compaction settings:
   - `[compaction].enabled` (bool): override auto-compaction on/off
   - `[compaction].token_threshold` (int): explicit estimated-token threshold

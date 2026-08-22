@@ -77,9 +77,12 @@ impl MiniMaxClient {
             HeaderValue::from_str(&format!("Bearer {api_key}"))?,
         );
 
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
+        let mut http_client_builder = reqwest::Client::builder().default_headers(headers);
+        if retry.request_timeout > 0.0 {
+            http_client_builder = http_client_builder
+                .timeout(std::time::Duration::from_secs_f64(retry.request_timeout));
+        }
+        let http_client = http_client_builder.build()?;
         let raw_http_client = reqwest::Client::new();
 
         Ok(Self {
@@ -302,9 +305,12 @@ impl MiniMaxTextClient {
         }
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
+        let mut http_client_builder = reqwest::Client::builder().default_headers(headers);
+        if retry.request_timeout > 0.0 {
+            http_client_builder = http_client_builder
+                .timeout(std::time::Duration::from_secs_f64(retry.request_timeout));
+        }
+        let http_client = http_client_builder.build()?;
 
         Ok(Self {
             http_client,
@@ -517,9 +523,12 @@ impl MiniMaxCodingClient {
             HeaderValue::from_str(&format!("Bearer {api_key}"))?,
         );
 
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
+        let mut http_client_builder = reqwest::Client::builder().default_headers(headers);
+        if retry.request_timeout > 0.0 {
+            http_client_builder = http_client_builder
+                .timeout(std::time::Duration::from_secs_f64(retry.request_timeout));
+        }
+        let http_client = http_client_builder.build()?;
 
         Ok(Self {
             http_client,

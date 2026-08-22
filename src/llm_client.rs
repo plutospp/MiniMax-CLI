@@ -345,7 +345,7 @@ impl Default for RetryConfig {
             jitter_factor: 0.1,
             respect_retry_after: true,
             retryable_status_codes: vec![429, 500, 502, 503, 504],
-            request_timeout: 120.0,
+            request_timeout: 0.0, // No per-request timeout by default
             total_timeout: 0.0, // No total timeout by default
         }
     }
@@ -455,6 +455,8 @@ impl From<RetryPolicy> for RetryConfig {
             initial_delay: policy.initial_delay,
             max_delay: policy.max_delay,
             exponential_base: policy.exponential_base,
+            request_timeout: policy.request_timeout,
+            total_timeout: policy.total_timeout,
             ..Default::default()
         }
     }
@@ -469,6 +471,8 @@ impl From<RetryConfig> for RetryPolicy {
             initial_delay: config.initial_delay,
             max_delay: config.max_delay,
             exponential_base: config.exponential_base,
+            request_timeout: config.request_timeout,
+            total_timeout: config.total_timeout,
         }
     }
 }
@@ -886,6 +890,8 @@ mod tests {
             initial_delay: 2.0,
             max_delay: 30.0,
             exponential_base: 3.0,
+            request_timeout: 1.5,
+            total_timeout: 90.0,
         };
 
         let config: RetryConfig = policy.clone().into();

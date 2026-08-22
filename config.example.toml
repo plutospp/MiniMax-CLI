@@ -102,6 +102,8 @@ max_retries = 3
 initial_delay = 1.0
 max_delay = 60.0
 exponential_base = 2.0
+# request_timeout = 0        # Per-request timeout in seconds (0 = no timeout; default)
+# total_timeout = 0          # Total timeout across all retries (0 = no limit; default)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction

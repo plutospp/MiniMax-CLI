@@ -93,6 +93,8 @@ pub struct RetryConfig {
     pub initial_delay: Option<f64>,
     pub max_delay: Option<f64>,
     pub exponential_base: Option<f64>,
+    pub request_timeout: Option<f64>,
+    pub total_timeout: Option<f64>,
 }
 
 /// RLM configuration loaded from config files.
@@ -144,6 +146,10 @@ pub struct RetryPolicy {
     pub initial_delay: f64,
     pub max_delay: f64,
     pub exponential_base: f64,
+    /// Per-request timeout in seconds (0 = no timeout).
+    pub request_timeout: f64,
+    /// Total timeout across all retry attempts in seconds (0 = no total timeout).
+    pub total_timeout: f64,
 }
 
 impl RetryPolicy {
@@ -788,6 +794,8 @@ impl Config {
             initial_delay: 1.0,
             max_delay: 60.0,
             exponential_base: 2.0,
+            request_timeout: 0.0,
+            total_timeout: 0.0,
         };
 
         let Some(cfg) = &self.retry else {
@@ -800,6 +808,8 @@ impl Config {
             initial_delay: cfg.initial_delay.unwrap_or(defaults.initial_delay),
             max_delay: cfg.max_delay.unwrap_or(defaults.max_delay),
             exponential_base: cfg.exponential_base.unwrap_or(defaults.exponential_base),
+            request_timeout: cfg.request_timeout.unwrap_or(defaults.request_timeout),
+            total_timeout: cfg.total_timeout.unwrap_or(defaults.total_timeout),
         }
     }
 }
