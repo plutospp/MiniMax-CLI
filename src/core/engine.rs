@@ -1133,7 +1133,8 @@ impl Engine {
         });
 
         // Main turn loop
-        self.handle_minimax_text_turn(&mut turn, tool_registry.as_ref(), tools, mode)
+        let final_error = self
+            .handle_minimax_text_turn(&mut turn, tool_registry.as_ref(), tools, mode)
             .await;
 
         // Update session usage
@@ -1142,6 +1143,8 @@ impl Engine {
         // Emit turn complete event
         let status = if self.cancel_token.is_cancelled() {
             TurnOutcomeStatus::Interrupted
+        } else if final_error.is_some() {
+            TurnOutcomeStatus::Failed
         } else {
             TurnOutcomeStatus::Completed
         };
@@ -1150,7 +1153,7 @@ impl Engine {
             .send(Event::TurnComplete {
                 usage: turn.usage,
                 status,
-                error: None,
+                error: final_error,
             })
             .await;
     }
@@ -1421,7 +1424,7 @@ impl Engine {
         Some(tools)
     }
 
-    /// Handle a turn using the MiniMax text API.
+    /// Handle a turn using the MiniMax text API. Returns an error message if the turn fails.
     #[allow(clippy::too_many_lines)]
     async fn handle_minimax_text_turn(
         &mut self,
@@ -1429,7 +1432,8 @@ impl Engine {
         tool_registry: Option<&crate::tools::ToolRegistry>,
         tools: Option<Vec<Tool>>,
         _mode: AppMode,
-    ) {
+    ) -> Option<String> {
+        let mut final_error = None;
         let client = self
             .minimax_text_client
             .clone()
@@ -1556,6 +1560,7 @@ impl Engine {
             let mut pending_message_complete = false;
             let mut last_text_index: Option<usize> = None;
             let mut stream_errors = 0u32;
+            let mut stream_failed = false;
 
             // Process stream events
             while let Some(event_result) = stream.next().await {
@@ -1567,8 +1572,11 @@ impl Engine {
                     Ok(e) => e,
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
-                        let _ = self.tx_event.send(Event::error(e.to_string(), true)).await;
+                        let err_msg = e.to_string();
+                        let _ = self.tx_event.send(Event::error(err_msg.clone(), true)).await;
                         if stream_errors >= 3 {
+                            final_error = Some(err_msg);
+                            stream_failed = true;
                             break;
                         }
                         continue;
@@ -1793,6 +1801,10 @@ impl Engine {
                 });
             }
 
+            if stream_failed {
+                break;
+            }
+
             // If no tool uses, we're done
             if tool_uses.is_empty() {
                 break;
@@ -1996,6 +2008,8 @@ impl Engine {
 
             turn.next_step();
         }
+
+        final_error
     }
 
     /// Get a reference to the session
