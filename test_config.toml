@@ -1,0 +1,5 @@
+[providers.poolside]
+api = "openai"
+base_url = "https://inference.poolside.ai"
+api_key = "sky_ApBgQFXb.T7SYYxvEPkwKyYyitmkLlosckLNWSegR"
+default_model = "poolside/laguna-s-2.1"
